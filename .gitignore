@@ -1,0 +1,17 @@
+# Generated content lives on Google Drive, never in the repo
+*.mp4
+*.wav
+*.mp3
+*.png
+*.jpg
+*.jpeg
+BLACK_HISTORY_FACTORY/
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Secrets
+.env
+*.token

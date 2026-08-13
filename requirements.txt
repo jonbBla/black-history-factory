@@ -1,0 +1,16 @@
+# --- Phase A (foundation) — needed now ---
+google-colab; sys_platform != "win32"  # only present inside Colab itself
+requests
+python-slugify
+
+# --- Phase C (research) — active now that Qwen is wired in ---
+transformers
+accelerate
+torch
+
+# --- Phase E (media) — active now that image/audio/video engines are wired in ---
+diffusers
+safetensors
+piper-tts
+# video_engine.py shells out to the ffmpeg binary directly (see Colab Cell 2's
+# apt-get install) rather than using a Python ffmpeg wrapper package.
