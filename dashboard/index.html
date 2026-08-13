@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Black History Factory — Dashboard</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Black History Factory</h1>
+    <p class="subtitle">Live production dashboard</p>
+  </header>
+
+  <main>
+    <section id="current-card" class="card">
+      <h2>Currently producing</h2>
+      <div id="current-content">
+        <p class="muted">Loading…</p>
+      </div>
+    </section>
+
+    <section id="latest-card" class="card">
+      <h2>Most recent video</h2>
+      <div id="latest-content">
+        <p class="muted">Loading…</p>
+      </div>
+    </section>
+
+    <section id="history-card" class="card">
+      <h2>Past videos</h2>
+      <ul id="history-list">
+        <li class="muted">Loading…</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>
+    <p>This dashboard only reads status JSON from this repo — it does not run the factory.</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
