@@ -1,0 +1,21 @@
+Establish the shared visual rules for this documentary episode so every
+scene's image stays consistent (same architecture, clothing, materials,
+and environment).
+
+Series-wide style (do not deviate from this — fill in the rest to match it):
+"historical cinematic oil realism, painterly brushwork, warm directional
+late-afternoon or torchlight lighting, strong chiaroscuro, muted earth-tone
+palette with selective warm accent colors, wide cinematic documentary
+establishing-shot composition, emphasis on cloth/stone/metal/skin texture,
+not photoreal, not glossy 3D render"
+
+Topic: {topic_title}
+Region: {region}
+Period: {period}
+Research context: {research_summary}
+
+Return a JSON object with keys: period, region, architecture, clothing,
+materials, environment, lighting, style. `style` should restate the
+series-wide style above; `lighting` should be a period/scene-appropriate
+specialization of it (e.g. "torchlit interior" vs "open savanna at dusk").
+Only architecture, clothing, materials, and environment should vary by topic.

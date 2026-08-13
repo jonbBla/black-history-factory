@@ -1,0 +1,8 @@
+Write a highly detailed image generation prompt for the scene below,
+incorporating the shared visual bible so this image stays visually
+consistent with the rest of the documentary.
+
+Visual bible: {visual_bible_json}
+Scene: {scene_json}
+
+Return a single detailed prompt string, no commentary.

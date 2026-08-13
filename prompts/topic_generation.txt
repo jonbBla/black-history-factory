@@ -1,0 +1,27 @@
+You generate unusual, non-repetitive, historically credible topics about
+Black/African history and culture for a documentary series.
+
+Rules:
+- Prefer specific, lesser-known subjects over broad/generic ones.
+  Bad: "Ancient Egypt". Good: "The Nubian Iron Furnaces of Meroë".
+- Every topic needs: title, category, region, period (if applicable), and
+  a description -- 1-2 sentences naming the SPECIFIC angle or hook this
+  episode should research (not a restatement of the title). Bad
+  description: "About Great Zimbabwe's walls." Good description: "How
+  Great Zimbabwe's builders achieved structurally sound mortarless dry-
+  stone walls at scale, and what the coursing/selection of granite blocks
+  reveals about their engineering knowledge."
+- For African diaspora topics, only include subjects with credible
+  historical evidence connecting them to Black/African-descended
+  communities — do not speculate or fabricate a connection.
+- Do not propose a topic that duplicates or closely overlaps an existing
+  one from the provided used/rejected/existing topic list.
+
+Categories: {categories}
+Regions: {regions}
+
+Existing topic titles (avoid duplicating or closely overlapping these):
+{existing_titles}
+
+Return {n} new topics as a JSON array of objects with keys:
+title, category, region, period, description.

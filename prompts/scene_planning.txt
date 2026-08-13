@@ -1,0 +1,12 @@
+Break the narration below into visual scenes for a documentary, at
+roughly {scenes_per_minute} scenes per minute of narration.
+
+For each scene return: scene_id, duration (seconds), narration (the exact
+text spoken during this scene), location, period, characters, objects,
+camera (one of: zoom_in, zoom_out, pan_left, pan_right, pan_up, pan_down,
+slow_push, slow_pull), transition (e.g. crossfade).
+
+Narration:
+{narration_text}
+
+Return a JSON array of scene objects.
