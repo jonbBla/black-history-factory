@@ -1,0 +1,16 @@
+{
+  "project_name": "Black History Factory",
+  "language": "English",
+  "target_video_minutes": 5,
+  "image_width": 896,
+  "image_height": 1600,
+  "scenes_per_minute": 6,
+  "enable_music": true,
+  "enable_subtitles": true,
+  "video_width": 1080,
+  "video_height": 1920,
+  "video_fps": 25,
+  "github_repo": "yourname/black-history-factory",
+  "github_dashboard_path": "dashboard/data",
+  "art_style": "historical cinematic oil realism, painterly brushwork, warm directional late-afternoon or torchlight lighting, strong chiaroscuro, muted earth-tone palette with selective warm accent colors, wide cinematic documentary establishing-shot composition, emphasis on cloth/stone/metal/skin texture, not photoreal, not glossy 3D render"
+}
