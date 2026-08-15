@@ -22,23 +22,46 @@ class QwenClient:
         self.device = device
 
     @classmethod
-    def load(cls, model_name: str = DEFAULT_MODEL, device: str = "cuda") -> "QwenClient":
+    def load(cls, model_name: str = DEFAULT_MODEL, device: str = "cuda",
+              load_in_4bit: bool = True) -> "QwenClient":
         """Call this once from Colab Cell 4, e.g.:
             from factory.qwen_client import QwenClient
             qwen = QwenClient.load()
             models = {"qwen": qwen}
         Requires a GPU runtime (Runtime -> Change runtime type -> T4 GPU or
-        better). Qwen2.5-7B-Instruct needs ~16GB VRAM in bf16; drop to a
-        smaller Qwen2.5 checkpoint (1.5B/3B) if you're on a free-tier T4 and
-        hit an out-of-memory error.
+        better).
+
+        VRAM note: Qwen2.5-7B-Instruct needs ~14-16GB VRAM in full bf16 --
+        on its own that's most of a free-tier T4's ~15GB, leaving nothing
+        for FLUX to share the GPU with. load_in_4bit=True (the default)
+        uses bitsandbytes 4-bit quantization, cutting Qwen's footprint to
+        roughly 5-6GB with a small, usually acceptable quality tradeoff --
+        this is what makes it realistic to run Qwen and FLUX (with
+        low_vram=True, see image_engine.load_flux) in the same T4 session.
+        Set load_in_4bit=False only if you have a bigger GPU (A100 40GB or
+        similar) and want full precision, or drop to a smaller checkpoint
+        (Qwen2.5-3B-Instruct / Qwen2.5-1.5B-Instruct) as an alternative to
+        quantization if you hit further memory pressure.
         """
         from transformers import AutoModelForCausalLM, AutoTokenizer
         import torch
         tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+        quantization_config = None
+        if load_in_4bit and device == "cuda":
+            from transformers import BitsAndBytesConfig
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+            )
+
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
             device_map=device,
+            quantization_config=quantization_config,
         )
         return cls(model=model, tokenizer=tokenizer, device=device)
 
