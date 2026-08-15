@@ -253,6 +253,21 @@ and scene planning all run for real. With `USE_FLUX = True` and
 build order, a full run with all three enabled produces an actual finished
 episode end-to-end.
 
+### 6. Verify resumability (Phase H, step "force-stop / restart")
+
+1. Run the factory, let it get partway through a job (interrupt the Colab
+   runtime manually, or use "Manage sessions → Terminate").
+2. Reconnect, re-run cells 1–6.
+3. Confirm in `current.json` / the printed log that it picked up at the same
+   `stage` and `scene`/`current` count instead of restarting the job.
+
+### 7. Plug in the real engines, one at a time
+
+Follow the build order in the spec (Phase C → D → E). Each stub file has a
+docstring with its exact expected input and output shape, so replacing a
+stub with a real Qwen call, FLUX call, Piper TTS call, or FFmpeg pipeline
+should not require touching `main.py`, `checkpoint.py`, or `status.py`.
+
 ### 8. A note on Piper voices
 
 Piper needs a downloaded voice model (`.onnx` + `.onnx.json`), not just the
@@ -280,20 +295,22 @@ never touches your real `00_CONFIG`/`01_TOPICS` — it works in a throwaway
 temp copy. Run this after any change to `factory/` before testing against
 real Colab.
 
-### 6. Verify resumability (Phase H, step "force-stop / restart")
+### 10. Troubleshooting
 
-1. Run the factory, let it get partway through a job (interrupt the Colab
-   runtime manually, or use "Manage sessions → Terminate").
-2. Reconnect, re-run cells 1–6.
-3. Confirm in `current.json` / the printed log that it picked up at the same
-   `stage` and `scene`/`current` count instead of restarting the job.
+**`credential propagation was unsuccessful` on `drive.mount()`**
+A Colab-side auth handshake failure, not a code bug. Try `drive.mount('/content/drive', force_remount=True)`; if that fails, disconnect and delete the runtime and reconnect; check for an ad blocker or third-party-cookie blocking on `colab.research.google.com`; try the sidebar folder icon's mount button instead of code; try a non-incognito window.
 
-### 7. Plug in the real engines, one at a time
+**`GatedRepoError` / `401 Unauthorized` loading FLUX**
+`black-forest-labs/FLUX.1-schnell` is a gated model -- you must (1) accept its license at the model's Hugging Face page while logged in, (2) create a token at huggingface.co/settings/tokens, (3) add it as a Colab secret named exactly `HF_TOKEN` with notebook access enabled, (4) **restart the runtime** (secrets set mid-session don't retroactively apply) and re-run.
 
-Follow the build order in the spec (Phase C → D → E). Each stub file has a
-docstring with its exact expected input and output shape, so replacing a
-stub with a real Qwen call, FLUX call, Piper TTS call, or FFmpeg pipeline
-should not require touching `main.py`, `checkpoint.py`, or `status.py`.
+**`OutOfMemoryError: CUDA out of memory` loading FLUX (or Qwen)**
+A capacity problem, not a leak: FLUX.1-schnell in full bf16 needs roughly 24GB VRAM on its own, and Qwen2.5-7B-Instruct needs another ~14-16GB in full bf16 -- together well past a free-tier T4's ~15GB, and FLUX alone doesn't even fit on a T4 at full precision. Both `qwen_client.QwenClient.load()` and `image_engine.load_flux()` default to memory-saving modes for exactly this reason: Qwen loads in 4-bit (`load_in_4bit=True`, needs the `bitsandbytes` package) and FLUX uses `enable_model_cpu_offload()` (`low_vram=True`) instead of keeping the whole pipeline resident on GPU. If you're still hitting OOM with both defaults on:
+- Restart the runtime first (a previously OOM'd session can leave the GPU in a bad state) -- Runtime -> Restart session.
+- Drop to a smaller Qwen checkpoint: `QwenClient.load("Qwen/Qwen2.5-3B-Instruct")`.
+- Upgrade to a Colab Pro / A100 runtime if you want everything resident at full precision (`load_in_4bit=False`, `low_vram=False`) for faster generation.
+
+**"Your disk is almost full" warning**
+Model weights are cached locally in the Colab runtime's disk (not Drive) -- Qwen + FLUX together are ~50GB downloaded. This is normal and separate from your Drive quota. If it becomes a problem, restart the runtime for a clean disk, or check Runtime -> Manage sessions for other running sessions eating disk.
 
 ## Requirements
 

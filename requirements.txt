@@ -6,6 +6,7 @@ python-slugify
 # --- Phase C (research) — active now that Qwen is wired in ---
 transformers
 accelerate
+bitsandbytes  # 4-bit quantization for Qwen -- see qwen_client.py's load_in_4bit note
 torch
 
 # --- Phase E (media) — active now that image/audio/video engines are wired in ---
