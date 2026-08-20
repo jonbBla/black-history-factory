@@ -42,6 +42,17 @@ def _load_template(name: str) -> str:
 def build_prompt(topic, research: dict) -> str:
     template = _load_template("visual_bible.txt")
     overview = (research or {}).get("overview", "") if isinstance(research, dict) else ""
+    if not isinstance(overview, str):
+        # Defensive: research_engine.py's own normalization should already
+        # guarantee this is a string, but this function doesn't control
+        # where `research` came from (it could be an older or hand-edited
+        # research_verified.json) -- never let a non-string value reach the
+        # slice below, since slicing a dict raises a confusing KeyError
+        # (not a clear TypeError) on Python 3.12+.
+        try:
+            overview = json.dumps(overview, ensure_ascii=False)
+        except TypeError:
+            overview = str(overview)
     return template.format(
         topic_title=topic.title,
         region=topic.region,

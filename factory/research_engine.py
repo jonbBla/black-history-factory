@@ -24,6 +24,7 @@ as a starting point for manual verification, not a guarantee.
 """
 
 from __future__ import annotations
+import json
 import os
 from .utils import write_json_atomic, now_iso
 
@@ -58,14 +59,36 @@ def build_prompt(topic) -> str:
     )
 
 
+def _as_text(value) -> str:
+    """Coerce a value that's supposed to be plain text into an actual
+    string, even if Qwen returned a nested object or list instead of a
+    plain string for a "text" field -- this happens in practice (the model
+    doesn't always respect the schema), and letting a dict/list silently
+    flow downstream as "text" causes hard-to-diagnose crashes later (e.g.
+    slicing a dict raises a confusing KeyError, not a clear TypeError, on
+    Python 3.12+). Better to flatten it to readable text once, here, than
+    let every downstream consumer defend against it separately."""
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except TypeError:
+        return str(value)
+
+
 def _normalize(data: dict, topic) -> dict:
     """Fills any keys the model omitted so downstream code never KeyErrors
-    on a missing field, and normalizes classifications."""
+    on a missing field, normalizes classifications, and coerces "topic"/
+    "overview" to actual strings regardless of what shape the model
+    returned them in."""
     out = {}
     for key in RESEARCH_SCHEMA_KEYS:
         default = "" if key in ("topic", "overview") else []
         out[key] = data.get(key, default) if isinstance(data, dict) else default
-    out["topic"] = out["topic"] or topic.title
+    out["topic"] = topic.title  # authoritative from the Topic object -- no need to trust the model's echo of it
+    out["overview"] = _as_text(out["overview"])
 
     for key in RESEARCH_SCHEMA_KEYS:
         if key in ("topic", "overview", "sources"):
