@@ -156,9 +156,19 @@ def load_sdxl_lightning(device: str = "cuda", num_inference_steps: int = 4):
     pipe = StableDiffusionXLPipeline.from_pretrained(
         base_model, torch_dtype=torch.float16, variant="fp16"
     ).to(device)
-    pipe.unet.load_state_dict(
-        load_file(hf_hub_download(lightning_repo, ckpt_name), device=device)
-    )
+    # Load the Lightning UNet weights to CPU first, then let load_state_dict
+    # copy each tensor into the already-allocated (already-on-GPU) UNet
+    # parameters in place. Loading directly to GPU here (device=device)
+    # instead would briefly hold BOTH the original UNet (already resident
+    # from .to(device) above) and this new state dict as a full second
+    # GPU-resident copy at the same time -- exactly the kind of transient
+    # memory spike that OOMs a 14.56GB T4 regardless of how small either
+    # model is on its own.
+    lightning_state_dict = load_file(hf_hub_download(lightning_repo, ckpt_name), device="cpu")
+    pipe.unet.load_state_dict(lightning_state_dict)
+    del lightning_state_dict
+    if device == "cuda":
+        torch.cuda.empty_cache()
     # Lightning's distillation requires this specific scheduler config --
     # using the base SDXL scheduler unmodified produces poor results.
     pipe.scheduler = EulerDiscreteScheduler.from_config(
