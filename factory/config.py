@@ -18,8 +18,8 @@ DEFAULTS = {
     "scenes_per_minute": 10,
     "enable_music": True,
     "enable_subtitles": True,
-    "video_width": 720,
-    "video_height": 1080,
+    "video_width": 1080,
+    "video_height": 1920,
     "video_fps": 25,
     "github_repo": "",          # e.g. "yourname/black-history-factory"
     "github_dashboard_path": "dashboard/data",
