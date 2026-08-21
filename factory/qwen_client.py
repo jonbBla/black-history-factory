@@ -63,6 +63,18 @@ class QwenClient:
             device_map=device,
             quantization_config=quantization_config,
         )
+
+        if device == "cuda":
+            # Direct confirmation of whether 4-bit quantization actually
+            # took effect, rather than inferring it from download logs --
+            # ~5-6GB here means it worked; ~14-16GB means it silently
+            # didn't (e.g. bitsandbytes missing from the installed
+            # requirements) and is worth knowing before debugging anything
+            # downstream as if it were a different problem.
+            allocated_gb = torch.cuda.memory_allocated() / (1024 ** 3)
+            print(f"Qwen GPU memory after load: {allocated_gb:.2f} GB "
+                  f"({'looks quantized' if allocated_gb < 8 else 'looks like FULL PRECISION -- check bitsandbytes is installed'})")
+
         return cls(model=model, tokenizer=tokenizer, device=device)
 
     def generate(self, prompt: str, max_new_tokens: int = 2048, temperature: float = 0.7) -> str:
@@ -124,3 +136,4 @@ def extract_json(text: str):
         except json.JSONDecodeError as e:
             raise ValueError(f"Found a JSON-like block but failed to parse it: {e}")
     raise ValueError("No JSON object or array found in model output")
+                  
