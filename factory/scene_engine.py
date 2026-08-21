@@ -43,20 +43,45 @@ def build_prompt(narration_text: str, config) -> str:
     )
 
 
+def _trim(text: str, max_words: int) -> str:
+    """Visual bible fields (architecture/clothing/materials/etc.) often
+    come back from Qwen as full sentences, not short tags -- concatenating
+    several of them plus the locked style string easily produces a prompt
+    exceeding both CLIP's 77-token limit and even FLUX's 256-token T5
+    budget, silently truncating mid-sentence at generation time. Trimming
+    each contributing field to a short phrase here keeps the composed
+    prompt within a realistic budget on purpose, rather than truncating
+    unpredictably wherever the tokenizer happens to cut it off.
+    """
+    words = text.split()
+    if len(words) <= max_words:
+        return text.rstrip(".")
+    return " ".join(words[:max_words]).rstrip(".,;:")
+
+
 def _compose_image_prompt(scene: dict, visual_bible: dict) -> str:
+    # Targets FLUX's T5 encoder budget (256 tokens, ~190-200 words with
+    # margin for punctuation/subword overhead) as the real constraint --
+    # FLUX also feeds the prompt to a CLIP encoder with a 77-token limit,
+    # but that's expected and harmless by design (CLIP only contributes a
+    # pooled summary embedding; T5 handles the actual detailed semantics).
+    # SDXL-Lightning has no T5 branch, so it will still truncate harder at
+    # CLIP's 77 tokens regardless -- a documented tradeoff in
+    # load_sdxl_lightning()'s docstring, not something one shared prompt
+    # can fully avoid for both backends at once.
     parts = [
-        visual_bible.get("style", ""),
-        visual_bible.get("lighting", ""),
+        _trim(visual_bible.get("style", ""), 35),
+        _trim(visual_bible.get("lighting", ""), 20),
         ", ".join(p for p in [visual_bible.get("period", ""), visual_bible.get("region", "")] if p),
-        visual_bible.get("architecture", ""),
-        visual_bible.get("clothing", ""),
-        visual_bible.get("materials", ""),
-        scene.get("location", "") or visual_bible.get("environment", ""),
+        _trim(visual_bible.get("architecture", ""), 15),
+        _trim(visual_bible.get("clothing", ""), 15),
+        _trim(visual_bible.get("materials", ""), 12),
+        _trim(scene.get("location", "") or visual_bible.get("environment", ""), 12),
     ]
     if scene.get("characters"):
-        parts.append("featuring: " + ", ".join(scene["characters"]))
+        parts.append("featuring: " + ", ".join(scene["characters"][:3]))
     if scene.get("objects"):
-        parts.append("with: " + ", ".join(scene["objects"]))
+        parts.append("with: " + ", ".join(scene["objects"][:3]))
     parts.append(f"camera movement: {scene.get('camera', DEFAULT_CAMERA)}")
     return ", ".join(p for p in parts if p)
 
