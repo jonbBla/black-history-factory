@@ -11,9 +11,37 @@ Design decision: the Qwen call asks ONLY for narration segmentation and
 blocking (location/period/characters/objects/camera/transition) -- it does
 NOT ask the model to write image_prompt. image_prompt is instead composed
 programmatically here from the shared visual_bible + this scene's own
-fields, so every single scene is guaranteed to carry the locked art style,
-lighting, architecture, and clothing consistently, rather than depending on
-the model to re-include all of that correctly across N separate scenes.
+fields.
+
+image_prompt budget, corrected against REAL observed data: SDXL-Lightning
+(the default image backend, see image_engine.py) uses CLIP text encoding
+with a hard 77-token limit -- and unlike a generic ~1.3 tokens/word
+estimate, actual logged output on this project's own content showed a
+~2.07 tokens/word ratio (specialized/foreign vocabulary like "djellabas"
+and "chiaroscuro" splits into more subword tokens than plain English).
+That means the real safe word budget is roughly 35 words, not ~57. Content
+past the budget is silently and completely dropped by CLIP, not gracefully
+degraded -- so this composes the prompt with scene-differentiating content
+(location, characters, objects) prioritized ahead of shared style
+boilerplate, since losing a little style consistency on one image is a
+minor hit, while losing scene differentiation on EVERY image (which is
+what happened before this fix) makes the whole video look repetitive.
+lighting and materials are dropped entirely from the composed prompt --
+they're the lowest-information-per-word fields and largely redundant with
+style's own lighting description already.
+
+Camera movement is deliberately NOT included in image_prompt: it's
+consumed directly from scene["camera"] by video_engine.py's zoompan filter
+AFTER the still image is generated. It was never doing anything useful as
+literal text in a still-image generation prompt.
+
+If you switch to FLUX (load_flux() in image_engine.py instead of
+load_sdxl_lightning()), this prompt is more conservative than FLUX's
+256-token T5 budget actually allows -- FLUX could handle significantly
+more detail. That's an accepted tradeoff for now since SDXL-Lightning is
+the recommended default; a backend-aware prompt length (computed at
+generation time in image_engine.py rather than baked in here) would be a
+cleaner fix if FLUX becomes the primary path again.
 """
 
 from __future__ import annotations
@@ -44,15 +72,11 @@ def build_prompt(narration_text: str, config) -> str:
 
 
 def _trim(text: str, max_words: int) -> str:
-    """Visual bible fields (architecture/clothing/materials/etc.) often
-    come back from Qwen as full sentences, not short tags -- concatenating
-    several of them plus the locked style string easily produces a prompt
-    exceeding both CLIP's 77-token limit and even FLUX's 256-token T5
-    budget, silently truncating mid-sentence at generation time. Trimming
-    each contributing field to a short phrase here keeps the composed
-    prompt within a realistic budget on purpose, rather than truncating
-    unpredictably wherever the tokenizer happens to cut it off.
-    """
+    """Cuts to a maximum word count rather than letting the tokenizer cut
+    wherever it happens to land -- deliberate, budgeted truncation instead
+    of unpredictable mid-sentence loss."""
+    if not text:
+        return ""
     words = text.split()
     if len(words) <= max_words:
         return text.rstrip(".")
@@ -60,30 +84,28 @@ def _trim(text: str, max_words: int) -> str:
 
 
 def _compose_image_prompt(scene: dict, visual_bible: dict) -> str:
-    # Targets FLUX's T5 encoder budget (256 tokens, ~190-200 words with
-    # margin for punctuation/subword overhead) as the real constraint --
-    # FLUX also feeds the prompt to a CLIP encoder with a 77-token limit,
-    # but that's expected and harmless by design (CLIP only contributes a
-    # pooled summary embedding; T5 handles the actual detailed semantics).
-    # SDXL-Lightning has no T5 branch, so it will still truncate harder at
-    # CLIP's 77 tokens regardless -- a documented tradeoff in
-    # load_sdxl_lightning()'s docstring, not something one shared prompt
-    # can fully avoid for both backends at once.
-    parts = [
-        _trim(visual_bible.get("style", ""), 35),
-        _trim(visual_bible.get("lighting", ""), 20),
-        ", ".join(p for p in [visual_bible.get("period", ""), visual_bible.get("region", "")] if p),
-        _trim(visual_bible.get("architecture", ""), 15),
-        _trim(visual_bible.get("clothing", ""), 15),
-        _trim(visual_bible.get("materials", ""), 12),
-        _trim(scene.get("location", "") or visual_bible.get("environment", ""), 12),
-    ]
+    parts = [_trim(visual_bible.get("style", ""), 7)]
+
+    location = scene.get("location", "") or visual_bible.get("environment", "")
+    if location:
+        parts.append(_trim(location, 5))
+
+    period_region = ", ".join(
+        p for p in [visual_bible.get("period", ""), visual_bible.get("region", "")] if p
+    )
+    if period_region:
+        parts.append(period_region)
+
     if scene.get("characters"):
-        parts.append("featuring: " + ", ".join(scene["characters"][:3]))
+        parts.append(", ".join(scene["characters"][:2]))
     if scene.get("objects"):
-        parts.append("with: " + ", ".join(scene["objects"][:3]))
-    parts.append(f"camera movement: {scene.get('camera', DEFAULT_CAMERA)}")
-    return ", ".join(p for p in parts if p)
+        parts.append(", ".join(scene["objects"][:2]))
+
+    parts.append(_trim(visual_bible.get("clothing", ""), 4))
+    parts.append(_trim(visual_bible.get("architecture", ""), 4))
+
+    joined = ", ".join(p for p in parts if p)
+    return _trim(joined, 35)  # absolute ceiling regardless of how verbose any field is
 
 
 def _normalize_scene(raw: dict, scene_id: int, visual_bible: dict) -> dict:
@@ -132,3 +154,4 @@ def run(paths, job_id: str, narration_text: str, visual_bible: dict, config, qwe
 
     write_json_atomic(paths.scenes_json(job_id), scenes)
     return scenes
+  
