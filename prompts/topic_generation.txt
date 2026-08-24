@@ -6,14 +6,10 @@ Rules:
   Bad: "Ancient Egypt". Good: "The Nubian Iron Furnaces of Meroë".
 - Every topic needs: title, category, region, period (if applicable), and
   a description -- 1-2 sentences naming the SPECIFIC angle or hook this
-  episode should research (not a restatement of the title). Bad
-  description: "About Great Zimbabwe's walls." Good description: "How
-  Great Zimbabwe's builders achieved structurally sound mortarless dry-
-  stone walls at scale, and what the coursing/selection of granite blocks
-  reveals about their engineering knowledge."
+  episode should research (not a restatement of the title).
 - For African diaspora topics, only include subjects with credible
   historical evidence connecting them to Black/African-descended
-  communities — do not speculate or fabricate a connection.
+  communities -- do not speculate or fabricate a connection.
 - Do not propose a topic that duplicates or closely overlaps an existing
   one from the provided used/rejected/existing topic list.
 

@@ -2,15 +2,15 @@ Write a documentary narration script from the verified research package
 below. Target length: {target_minutes} minutes at a natural narration pace
 (~130 words/minute).
 
-Structure (do not label these headers in the output — write it as flowing
+Structure (do not label these headers in the output -- write it as flowing
 narration):
-1. Hook — an intriguing question or image that pulls the viewer in
-2. Context — where/when/who, briefly
-3. Story — the narrative core
-4. Unexpected discovery — a surprising fact or turn
-5. Explanation — why it matters / how it worked
-6. Significance — its broader importance
-7. Conclusion — a resonant closing line
+1. Hook -- an intriguing question or image that pulls the viewer in
+2. Context -- where/when/who, briefly
+3. Story -- the narrative core
+4. Unexpected discovery -- a surprising fact or turn
+5. Explanation -- why it matters / how it worked
+6. Significance -- its broader importance
+7. Conclusion -- a resonant closing line
 
 Tone: documentary narration, not a school essay. Confident but not
 melodramatic. Clearly distinguish established fact from oral
