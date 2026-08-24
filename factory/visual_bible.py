@@ -1,6 +1,6 @@
-"""Phase D -- real implementation.
+"""Real visual-bible implementation.
 
-Contract (unchanged):
+Contract:
   input:  topic + verified research package + config (for the locked
           series-wide art_style) + a QwenClient
   output: a dict of visual rules shared by every scene's image prompt:
@@ -10,19 +10,15 @@ Contract (unchanged):
 `style` is ALWAYS taken from config.art_style, never from the model --
 the whole point of a visual bible is series-wide consistency, and the art
 style was a deliberate one-time decision (see config.py), not something to
-re-derive per topic. `lighting` may be specialized per topic (e.g. "torchlit
-interior" vs "open savanna at dusk") but stays within the locked style's
-overall look. Only architecture/clothing/materials/environment are
-genuinely topic-specific and come from the model.
+re-derive per topic. `lighting` may be specialized per topic but stays
+within the locked style's overall look. Only architecture/clothing/
+materials/environment are genuinely topic-specific and come from the model.
 
 If Qwen's response is malformed or the call fails, this falls back to
-placeholders rather than failing the whole job -- visual bible detail is a
-quality-of-life improvement for image consistency, not something worth
-losing a completed research+narration pipeline over.
+placeholders rather than failing the whole job.
 """
 
 from __future__ import annotations
-import json
 import os
 
 _PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts")
@@ -43,16 +39,7 @@ def build_prompt(topic, research: dict) -> str:
     template = _load_template("visual_bible.txt")
     overview = (research or {}).get("overview", "") if isinstance(research, dict) else ""
     if not isinstance(overview, str):
-        # Defensive: research_engine.py's own normalization should already
-        # guarantee this is a string, but this function doesn't control
-        # where `research` came from (it could be an older or hand-edited
-        # research_verified.json) -- never let a non-string value reach the
-        # slice below, since slicing a dict raises a confusing KeyError
-        # (not a clear TypeError) on Python 3.12+.
-        try:
-            overview = json.dumps(overview, ensure_ascii=False)
-        except TypeError:
-            overview = str(overview)
+        overview = str(overview)
     return template.format(
         topic_title=topic.title,
         region=topic.region,

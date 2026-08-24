@@ -1,6 +1,6 @@
-"""Phase E -- real implementation.
+"""Real audio-generation implementation.
 
-Contract (unchanged):
+Contract:
   input:  scenes list (each with its own "narration" text) + a loaded
           Piper voice
   output: paths.audio_dir(job_id)/scene_{NNN}.wav -- one file per scene, so
@@ -23,8 +23,7 @@ def load_piper_voice(model_path: str = None, device: str = "cuda"):
         models["piper"] = load_piper_voice("/content/en_US-lessac-medium.onnx")
     Piper voice models (.onnx + .onnx.json) are downloaded separately --
     see https://github.com/rhasspy/piper/blob/master/VOICES.md for the
-    catalog. Pick an English voice (or match config.language) and pass its
-    .onnx path here.
+    catalog.
     """
     from piper import PiperVoice
     return PiperVoice.load(model_path, use_cuda=(device == "cuda"))

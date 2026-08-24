@@ -1,24 +1,67 @@
 """Qwen loader + JSON-safe generation wrapper.
 
 Loaded ONCE in Colab notebook Cell 4 and reused across every job and every
-stage that needs it (research, fact-check, later narration/scene-planning)
-— reloading the model per call would be far too slow and would blow past
-Colab's session time on its own. main.py never imports transformers
-directly; it only ever calls methods on a QwenClient instance passed in
-from the notebook.
+stage that needs it (research, fact-check, narration, visual bible, scene
+planning) -- reloading the model per call would be far too slow. main.py
+never imports transformers directly; it only ever calls methods on a
+QwenClient instance passed in from the notebook.
 """
 
 from __future__ import annotations
 import json
 import re
 
-DEFAULT_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+DEFAULT_MODEL = "Qwen/Qwen2.5-3B-Instruct"
+# Recommendation for a free-tier T4 (14.56GB VRAM): Qwen 3B + SDXL-Lightning
+# together total ~13GB even at FULL precision, no quantization required --
+# real margin instead of a razor's edge. Qwen 7B needs 4-bit quantization
+# working correctly to fit alongside an image model at all, which has been
+# an added source of risk in practice. Pass a different model_name to
+# QwenClient.load() if you want to try 7B anyway.
 
 
 class QwenClient:
     def __init__(self, model=None, tokenizer=None, device="cuda"):
         self.model = model
         self.tokenizer = tokenizer
+        self.device = device
+        self._quantized = False  # set True in load() when 4-bit quantization is active
+
+    def offload_to_cpu(self) -> None:
+        """Frees Qwen's GPU memory without discarding the loaded weights, so
+        it can be restored cheaply later rather than reloaded from disk.
+        main.py calls this automatically right before the image_generation
+        stage, since Qwen isn't needed again until the next job's research
+        stage -- freeing this memory gives the image model real headroom on
+        a tight-VRAM GPU instead of Qwen sitting resident and unused.
+
+        Note: bitsandbytes-quantized models generally CANNOT be moved back
+        to GPU with a plain .to("cuda") call once offloaded this way -- if
+        self._quantized is True, this is a no-op with a warning instead of
+        risking a broken model. Quantized Qwen is already only ~2-3GB (3B)
+        or ~5-6GB (7B), which is the scenario where offloading matters
+        least anyway; it's full-precision Qwen where freeing this memory
+        during image generation actually matters, and that case
+        offloads/restores safely.
+        """
+        if self.model is None or self.device == "cpu":
+            return
+        if self._quantized:
+            print("QwenClient.offload_to_cpu(): skipped -- quantized models "
+                  "can't be safely moved between devices after loading.")
+            return
+        import torch
+        self.model.to("cpu")
+        self.device = "cpu"
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def restore_to_gpu(self, device: str = "cuda") -> None:
+        """Reverses offload_to_cpu(). No-op if already on GPU or if the
+        model is quantized (see offload_to_cpu's note)."""
+        if self.model is None or self.device == device or self._quantized:
+            return
+        self.model.to(device)
         self.device = device
 
     @classmethod
@@ -28,20 +71,14 @@ class QwenClient:
             from factory.qwen_client import QwenClient
             qwen = QwenClient.load()
             models = {"qwen": qwen}
-        Requires a GPU runtime (Runtime -> Change runtime type -> T4 GPU or
-        better).
+        Requires a GPU runtime (Runtime -> Change runtime type -> GPU (T4 or
+        better)).
 
-        VRAM note: Qwen2.5-7B-Instruct needs ~14-16GB VRAM in full bf16 --
-        on its own that's most of a free-tier T4's ~15GB, leaving nothing
-        for FLUX to share the GPU with. load_in_4bit=True (the default)
-        uses bitsandbytes 4-bit quantization, cutting Qwen's footprint to
-        roughly 5-6GB with a small, usually acceptable quality tradeoff --
-        this is what makes it realistic to run Qwen and FLUX (with
-        low_vram=True, see image_engine.load_flux) in the same T4 session.
-        Set load_in_4bit=False only if you have a bigger GPU (A100 40GB or
-        similar) and want full precision, or drop to a smaller checkpoint
-        (Qwen2.5-3B-Instruct / Qwen2.5-1.5B-Instruct) as an alternative to
-        quantization if you hit further memory pressure.
+        load_in_4bit=True (the default) uses bitsandbytes 4-bit
+        quantization, cutting VRAM footprint substantially (e.g. Qwen 7B
+        goes from ~14-16GB to ~5-6GB). This mainly matters if you switch to
+        a larger checkpoint than the 3B default; 3B is small enough that
+        quantization is optional either way.
         """
         from transformers import AutoModelForCausalLM, AutoTokenizer
         import torch
@@ -66,16 +103,14 @@ class QwenClient:
 
         if device == "cuda":
             # Direct confirmation of whether 4-bit quantization actually
-            # took effect, rather than inferring it from download logs --
-            # ~5-6GB here means it worked; ~14-16GB means it silently
-            # didn't (e.g. bitsandbytes missing from the installed
-            # requirements) and is worth knowing before debugging anything
-            # downstream as if it were a different problem.
+            # took effect, rather than inferring it from download logs.
             allocated_gb = torch.cuda.memory_allocated() / (1024 ** 3)
             print(f"Qwen GPU memory after load: {allocated_gb:.2f} GB "
                   f"({'looks quantized' if allocated_gb < 8 else 'looks like FULL PRECISION -- check bitsandbytes is installed'})")
 
-        return cls(model=model, tokenizer=tokenizer, device=device)
+        client = cls(model=model, tokenizer=tokenizer, device=device)
+        client._quantized = bool(quantization_config)
+        return client
 
     def generate(self, prompt: str, max_new_tokens: int = 2048, temperature: float = 0.7) -> str:
         messages = [{"role": "user", "content": prompt}]
@@ -97,7 +132,7 @@ class QwenClient:
         routinely wrap JSON in prose or markdown fences even when told not
         to, so this retries with a stricter follow-up instruction rather
         than silently writing malformed data. Raises ValueError if it still
-        can't get valid JSON — callers must catch this and fail/checkpoint
+        can't get valid JSON -- callers must catch this and fail/checkpoint
         the stage as an error rather than write garbage downstream."""
         last_err = None
         current_prompt = prompt
@@ -136,4 +171,3 @@ def extract_json(text: str):
         except json.JSONDecodeError as e:
             raise ValueError(f"Found a JSON-like block but failed to parse it: {e}")
     raise ValueError("No JSON object or array found in model output")
-                  

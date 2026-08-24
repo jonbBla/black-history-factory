@@ -5,10 +5,11 @@ Rule used everywhere in main.py's job loop:
     already exists on Drive -> if yes, SKIP; if no, GENERATE.
 
 The checkpoint file itself is just a human-readable summary of where we are
-(stage name + scene progress) — the *real* source of truth for "is this
-already done" is always the actual output file, so a checkpoint that's
-slightly out of sync can never cause double-billing an API or corrupt data;
-worst case it just re-checks a file that turns out to already exist.
+(stage name + scene progress + stage timing history) -- the *real* source
+of truth for "is this already done" is always the actual output file, so a
+checkpoint that's slightly out of sync can never cause double-billing an
+API or corrupt data; worst case it just re-checks a file that turns out to
+already exist.
 """
 
 from __future__ import annotations
@@ -95,9 +96,9 @@ class Checkpoint:
         self.save(paths)
 
 
-def all_job_ids(paths) -> list[str]:
+def all_job_ids(paths) -> list:
     """Every job id that has ever been started, derived from actual
-    checkpoint files on disk (the ground truth) rather than the topic log —
+    checkpoint files on disk (the ground truth) rather than the topic log --
     topic ids and job ids are separate namespaces and must never be
     conflated when computing the next job id."""
     import os
@@ -124,7 +125,7 @@ def find_in_progress_job(paths) -> Optional[str]:
 
 
 def stage_output_exists(paths, job_id: str, stage: str, expected_scenes: int = 0) -> bool:
-    """The actual skip/generate check — looks at real output files, not just
+    """The actual skip/generate check -- looks at real output files, not just
     the checkpoint record, so a stale or missing checkpoint never causes
     redone work or lost work."""
     import os

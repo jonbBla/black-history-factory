@@ -1,6 +1,6 @@
 """Writes 08_STATUS/current.json and history.json, and (optionally) pushes
 copies of both to the GitHub dashboard repo so the phone-facing GitHub Pages
-site can show live progress. The dashboard only ever reads these two files —
+site can show live progress. The dashboard only ever reads these two files --
 it never talks to Colab directly.
 """
 

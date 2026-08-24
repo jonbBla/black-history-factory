@@ -1,12 +1,4 @@
-"""Topic database: storage, exact + light semantic dedupe, and selection.
-
-Real AI-assisted semantic dedupe (asking Qwen "are these the same topic?")
-belongs in research_engine.py's territory once Phase C is wired in — this
-module does a cheap local approximation (normalized token overlap) so the
-skeleton has *something* working end-to-end, and flags borderline pairs for
-the AI to arbitrate later instead of silently merging or silently allowing
-duplicates.
-"""
+"""Topic database: storage, exact + light semantic dedupe, and selection."""
 
 from __future__ import annotations
 import random
@@ -24,7 +16,7 @@ class Topic:
     category: str
     region: str
     period: str = ""
-    description: str = ""   # the specific angle/hook to research -- see note below
+    description: str = ""   # the specific angle/hook to research
     aliases: list = field(default_factory=list)
     used: bool = False
 
@@ -45,17 +37,16 @@ def _overlap_ratio(a: str, b: str) -> float:
     return len(sa & sb) / len(sa | sb)
 
 
-def load_topics(paths) -> list[Topic]:
+def load_topics(paths) -> list:
     raw = read_json(paths.topics_json, default=[])
     return [Topic(**t) for t in raw]
 
 
-def save_topics(paths, topics: list[Topic]) -> None:
+def save_topics(paths, topics: list) -> None:
     write_json_atomic(paths.topics_json, [t.to_dict() for t in topics])
 
 
-def find_possible_duplicates(new_title: str, existing: list[Topic],
-                              threshold: float = 0.55) -> list[Topic]:
+def find_possible_duplicates(new_title: str, existing: list, threshold: float = 0.55) -> list:
     """Returns existing topics whose title/aliases overlap enough with
     new_title that a human (or the AI) should confirm they're distinct
     before adding new_title to the database."""
@@ -67,9 +58,9 @@ def find_possible_duplicates(new_title: str, existing: list[Topic],
     return hits
 
 
-def add_topic(paths, topic: Topic, *, force: bool = False) -> tuple[bool, list[Topic]]:
+def add_topic(paths, topic: Topic, *, force: bool = False):
     """Returns (added, possible_duplicates). If possible_duplicates is
-    non-empty and force is False, the topic is NOT added — surface the
+    non-empty and force is False, the topic is NOT added -- surface the
     duplicates to the AI/human for a decision first."""
     topics = load_topics(paths)
     dupes = find_possible_duplicates(topic.title, topics)
@@ -81,8 +72,7 @@ def add_topic(paths, topic: Topic, *, force: bool = False) -> tuple[bool, list[T
 
 
 def select_next_topic(paths) -> Optional[Topic]:
-    """Random selection among unused topics — swap for weighted/category-
-    balanced selection later without touching callers."""
+    """Random selection among unused topics."""
     topics = load_topics(paths)
     unused = [t for t in topics if not t.used]
     if not unused:

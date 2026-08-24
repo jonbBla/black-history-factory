@@ -1,33 +1,20 @@
-"""Phase E -- real implementation.
+"""Real video-assembly implementation, driven entirely through ffmpeg via
+subprocess.
 
-Contract (unchanged):
+Contract:
   input:  scenes list, image files, audio files, config (video_width,
           video_height, video_fps, enable_music, enable_subtitles)
   output: renders to paths.video_rendering(job_id) first, then on success
-          moves to paths.video_completed(job_id) -- the two-folder split
-          means a half-rendered file from a crashed run is never mistaken
-          for a finished video.
+          moves to paths.video_completed(job_id).
 
-Pipeline, driven entirely through ffmpeg via subprocess:
+Pipeline:
   1. Per scene: still image -> a short video clip sized to that scene's
-     ACTUAL narration audio duration (not the planned duration -- Piper's
-     real output rarely matches the estimate exactly), with a Ken Burns
-     zoom/pan matching the scene's requested camera move, muxed with its
-     narration audio.
-  2. All scene clips concatenated with crossfade transitions (ffmpeg xfade
-     + acrossfade), matching scene["transition"].
-  3. Optional subtitle burn-in, generated from each scene's narration text
-     and its actual timing in the assembled timeline.
+     ACTUAL narration audio duration, with a Ken Burns zoom/pan matching
+     the scene's requested camera move, muxed with its narration audio.
+  2. All scene clips concatenated with crossfade transitions.
+  3. Optional subtitle burn-in, generated from each scene's narration text.
   4. Optional background music mixed in under the narration at low volume,
-     if a music file is present in 05_AUDIO/music/ -- silently skipped
-     (not a hard failure) if enable_music is true but no music file exists,
-     since music is a nice-to-have polish step, not a correctness
-     requirement of the video itself.
-
-Intermediate per-scene clips are built in a local temp directory (never
-written to Drive) since they're cheap to regenerate from the
-already-cached images/audio if a Colab session ends mid-render -- only the
-final MP4 in 06_VIDEOS/ needs to survive across sessions.
+     if a music file is present in 05_AUDIO/music/.
 """
 
 from __future__ import annotations
@@ -40,13 +27,6 @@ import tempfile
 from .audio_engine import wav_duration_seconds
 
 CAMERA_ZOOMPAN = {
-    # zoompan expressions: z is zoom factor per output frame, x/y are the
-    # top-left crop offset (in source-image pixel space after the initial
-    # upscale) that creates the pan. {d} is substituted with the actual
-    # output frame count at call time -- zoompan's x/y expressions do NOT
-    # have access to the filter's own `d` option as an eval variable (only
-    # `on`, the current output frame number, is available), so a literal
-    # frame count has to be baked in per clip rather than referenced by name.
     "zoom_in":   dict(z="min(zoom+0.0020,1.4)", x="iw/2-(iw/zoom/2)", y="ih/2-(ih/zoom/2)"),
     "zoom_out":  dict(z="if(eq(on,0),1.4,max(zoom-0.0020,1.0))", x="iw/2-(iw/zoom/2)", y="ih/2-(ih/zoom/2)"),
     "slow_push": dict(z="min(zoom+0.0010,1.2)", x="iw/2-(iw/zoom/2)", y="ih/2-(ih/zoom/2)"),
@@ -70,13 +50,10 @@ def _run(cmd: list) -> None:
         )
 
 
-def _build_scene_clip(image_path: str, audio_path: str, duration: float,
-                       camera: str, width: int, height: int, fps: int, out_path: str) -> None:
+def _build_scene_clip(image_path, audio_path, duration, camera, width, height, fps, out_path):
     frames = max(1, int(round(duration * fps)))
     move_template = CAMERA_ZOOMPAN.get(camera, CAMERA_ZOOMPAN[DEFAULT_CAMERA])
     move = {k: v.format(d=frames) for k, v in move_template.items()}
-    # Upscale generously before zoompan so panning/zooming never samples
-    # below the target resolution.
     upscale = f"{width * 2}:{height * 2}"
     zoompan = (
         f"scale={upscale}:force_original_aspect_ratio=increase,"
@@ -98,11 +75,7 @@ def _build_scene_clip(image_path: str, audio_path: str, duration: float,
     _run(cmd)
 
 
-def _concat_with_crossfade(clip_paths: list, durations: list, transition_sec: float,
-                            width: int, height: int, fps: int, out_path: str) -> None:
-    """Chains ffmpeg's xfade/acrossfade filters pairwise. Falls back to a
-    hard concat (no crossfade) for a single clip, or if transition_sec is
-    longer than the shortest neighboring clip (xfade would otherwise fail)."""
+def _concat_with_crossfade(clip_paths, durations, transition_sec, width, height, fps, out_path):
     n = len(clip_paths)
     if n == 1:
         shutil.copy(clip_paths[0], out_path)
@@ -141,8 +114,8 @@ def _concat_with_crossfade(clip_paths: list, durations: list, transition_sec: fl
     _run(cmd)
 
 
-def _write_srt(scenes: list, durations: list, out_path: str) -> None:
-    def _fmt(t: float) -> str:
+def _write_srt(scenes, durations, out_path):
+    def _fmt(t):
         h = int(t // 3600); m = int((t % 3600) // 60); s = t % 60
         return f"{h:02d}:{m:02d}:{s:06.3f}".replace(".", ",")
 
@@ -157,15 +130,13 @@ def _write_srt(scenes: list, durations: list, out_path: str) -> None:
         f.write("\n".join(lines))
 
 
-def _burn_subtitles(in_path: str, srt_path: str, out_path: str) -> None:
-    # ffmpeg's subtitles filter needs an escaped path on some platforms;
-    # keeping the temp dir path simple (no colons/special chars) avoids that.
+def _burn_subtitles(in_path, srt_path, out_path):
     cmd = ["ffmpeg", "-y", "-i", in_path, "-vf", f"subtitles={srt_path}",
            "-c:a", "copy", out_path]
     _run(cmd)
 
 
-def _mix_music(in_path: str, music_path: str, out_path: str, music_volume: float = 0.12) -> None:
+def _mix_music(in_path, music_path, out_path, music_volume=0.12):
     cmd = [
         "ffmpeg", "-y", "-i", in_path, "-i", music_path,
         "-filter_complex",
@@ -178,7 +149,7 @@ def _mix_music(in_path: str, music_path: str, out_path: str, music_volume: float
     _run(cmd)
 
 
-def _find_music_file(paths) -> str | None:
+def _find_music_file(paths):
     music_dir = paths("05_AUDIO", "music")
     if not os.path.isdir(music_dir):
         return None
@@ -190,8 +161,8 @@ def _find_music_file(paths) -> str | None:
 
 
 def run(paths, job_id: str, scenes: list, image_files: list, audio_files: list, config) -> str:
-    width = getattr(config, "video_width", 1920)
-    height = getattr(config, "video_height", 1080)
+    width = getattr(config, "video_width", 1080)
+    height = getattr(config, "video_height", 1920)
     fps = getattr(config, "video_fps", 25)
     enable_music = getattr(config, "enable_music", True)
     enable_subtitles = getattr(config, "enable_subtitles", True)
@@ -235,7 +206,6 @@ def run(paths, job_id: str, scenes: list, image_files: list, audio_files: list, 
                 mixed = os.path.join(tmp, "mixed.mp4")
                 _mix_music(current, music_file, mixed)
                 current = mixed
-            # else: no music file available -- skip silently, not a hard failure.
 
         rendering_path = paths.video_rendering(job_id)
         os.makedirs(os.path.dirname(rendering_path), exist_ok=True)

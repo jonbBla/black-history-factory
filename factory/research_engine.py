@@ -1,6 +1,6 @@
-"""Phase C — real implementation.
+"""Real research engine implementation.
 
-Contract (unchanged from the Phase A stub):
+Contract:
   input:  a Topic (see topic_engine.Topic) + a QwenClient
   output: writes paths.research_raw(job_id) with keys: topic, overview,
     timeline, people, architecture, technology, daily_life, religion,
@@ -11,16 +11,12 @@ Every list item that represents a claim gets a "classification" field, one
 of: established_fact, archaeological_evidence, scholarly_interpretation,
 oral_tradition, mythology, uncertain. If the model omits a classification
 (or returns one that isn't in this set), it defaults to "uncertain" rather
-than being silently treated as established fact -- this matters a lot for
-this subject matter, where oral tradition and mythology are common and
-should never get flattened into "fact" by an engineering shortcut.
+than being silently treated as established fact.
 
 External source cross-checking (the source hierarchy in the spec: academic
 papers, museums, universities, archaeological institutions, ...) is not
-wired in yet -- that's a distinct follow-up (would need a web-search-capable
-tool call available to Qwen, or a separate retrieval step before this
-prompt). For now `sources` is whatever the model reports citing; treat it
-as a starting point for manual verification, not a guarantee.
+wired in yet -- `sources` is currently whatever the model reports citing,
+which needs human spot-checking until a retrieval step is added.
 """
 
 from __future__ import annotations
@@ -80,9 +76,8 @@ def _as_text(value) -> str:
 
 def _normalize(data: dict, topic) -> dict:
     """Fills any keys the model omitted so downstream code never KeyErrors
-    on a missing field, normalizes classifications, and coerces "topic"/
-    "overview" to actual strings regardless of what shape the model
-    returned them in."""
+    on a missing field, normalizes classifications, and coerces "overview"
+    to an actual string regardless of what shape the model returned it in."""
     out = {}
     for key in RESEARCH_SCHEMA_KEYS:
         default = "" if key in ("topic", "overview") else []
@@ -121,8 +116,6 @@ def run(paths, job_id: str, topic, qwen=None) -> dict:
     try:
         raw = qwen.generate_json(prompt, max_new_tokens=3000)
     except ValueError as e:
-        # Fail loudly rather than writing garbage the fact-checker would
-        # then have to somehow make sense of.
         raise RuntimeError(f"Research generation failed for {topic.title}: {e}") from e
 
     normalized = _normalize(raw if isinstance(raw, dict) else {}, topic)

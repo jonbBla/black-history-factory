@@ -41,7 +41,7 @@ def slugify(text: str) -> str:
     return text.strip("-")
 
 
-def next_job_id(used_ids: list[str]) -> str:
+def next_job_id(used_ids: list) -> str:
     """BH000001, BH000002, ... based on the highest existing id."""
     max_n = 0
     for jid in used_ids:

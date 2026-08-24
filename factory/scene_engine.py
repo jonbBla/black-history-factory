@@ -154,4 +154,3 @@ def run(paths, job_id: str, narration_text: str, visual_bible: dict, config, qwe
 
     write_json_atomic(paths.scenes_json(job_id), scenes)
     return scenes
-  

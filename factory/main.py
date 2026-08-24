@@ -1,11 +1,10 @@
 """The job loop. This is what Colab notebook Cell 6 calls.
 
-Design: every stage follows the same pattern —
+Design: every stage follows the same pattern --
     if stage_output_exists(...): skip, advance checkpoint, continue
     else: run the stage, then advance checkpoint
 so stopping Colab at any point and re-running this function picks up
-exactly where it left off, without redoing finished work or an API call
-that already succeeded.
+exactly where it left off.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ import os
 from . import topic_engine, research_engine, fact_checker, script_engine
 from . import scene_engine, visual_bible, image_engine, audio_engine
 from . import video_engine, thumbnail_engine, status, github
-from .checkpoint import Checkpoint, find_in_progress_job, stage_output_exists, all_job_ids, STAGES
+from .checkpoint import Checkpoint, find_in_progress_job, stage_output_exists, all_job_ids
 from .config import Config
 from .drive import DrivePaths, mount_drive
 from .utils import read_json, write_json_atomic, next_job_id, now_iso
@@ -25,11 +24,11 @@ class NoTopicsAvailable(RuntimeError):
     mid-job failure so main.run() knows it's safe to mark status idle."""
 
 
-def _get_or_start_job(paths) -> tuple[Checkpoint, object]:
+def _get_or_start_job(paths) -> tuple:
     """Resume the in-progress job if one exists, otherwise pick a new topic
-    and start a fresh job. Job ids and topic ids are separate namespaces —
-    the checkpoint stores which topic_id a job belongs to, so resuming never
-    has to guess the mapping between them."""
+    and start a fresh job. Job ids and topic ids are separate namespaces --
+    the checkpoint stores which topic_id a job belongs to, so resuming
+    never has to guess the mapping between them."""
     in_progress_id = find_in_progress_job(paths)
     if in_progress_id:
         cp = Checkpoint.load(paths, in_progress_id)
@@ -48,7 +47,7 @@ def _get_or_start_job(paths) -> tuple[Checkpoint, object]:
     return cp, topic
 
 
-def run_one_job(paths, config, gh_token: str = "", models: dict | None = None) -> Checkpoint:
+def run_one_job(paths, config, gh_token: str = "", models: dict = None) -> Checkpoint:
     models = models or {}
     qwen = models.get("qwen")
     cp, topic = _get_or_start_job(paths)
@@ -63,10 +62,11 @@ def run_one_job(paths, config, gh_token: str = "", models: dict | None = None) -
     try:
         return _run_job_stages(paths, config, cp, topic, qwen, models, _push)
     except Exception as e:
-        # Any stage failure marks the checkpoint as an error (visible on the
-        # dashboard) instead of silently dying or leaving current.json
-        # showing a stale "running" state. The topic is NOT marked used, so
-        # a later run will retry this exact job from wherever it stopped.
+        # Any stage failure marks the checkpoint as an error (visible on
+        # the dashboard) instead of silently dying or leaving current.json
+        # showing a stale "running" state. The topic is NOT marked used,
+        # so a later run will retry this exact job from wherever it
+        # stopped.
         cp.fail(paths, str(e))
         _push()
         raise
@@ -74,6 +74,14 @@ def run_one_job(paths, config, gh_token: str = "", models: dict | None = None) -
 
 def _run_job_stages(paths, config, cp, topic, qwen, models, _push) -> Checkpoint:
     _push()
+
+    # If a previous job in this same Colab session offloaded Qwen to CPU
+    # before its image-generation stage, restore it now -- this job's
+    # research/narration/visual-bible/scene stages need it back on GPU.
+    # No-op if Qwen is already on GPU, was never offloaded, or is
+    # quantized (see QwenClient.restore_to_gpu's docstring).
+    if qwen is not None and hasattr(qwen, "restore_to_gpu"):
+        qwen.restore_to_gpu()
 
     # --- research ---
     if not stage_output_exists(paths, cp.job_id, "research"):
@@ -107,6 +115,13 @@ def _run_job_stages(paths, config, cp, topic, qwen, models, _push) -> Checkpoint
     else:
         scenes = read_json(paths.scenes_json(cp.job_id), default=[])
     total_scenes = len(scenes)
+
+    # Qwen isn't needed again until the NEXT job's research stage (audio,
+    # rendering, and thumbnailing don't use it either) -- freeing its GPU
+    # memory here gives image generation real headroom on a tight-VRAM GPU
+    # instead of Qwen sitting resident and unused for the rest of this job.
+    if qwen is not None and hasattr(qwen, "offload_to_cpu"):
+        qwen.offload_to_cpu()
 
     # --- images ---
     if not stage_output_exists(paths, cp.job_id, "image_generation", total_scenes):
@@ -163,12 +178,11 @@ def _run_job_stages(paths, config, cp, topic, qwen, models, _push) -> Checkpoint
 
 
 def _archive_job_manifest(paths, cp, topic, research: dict, total_scenes: int, video_path: str) -> None:
-    """Phase F: a durable, human-readable record of a completed job --
-    which topic, how long each stage took (from checkpoint.stage_history),
-    how many scenes, what sources the research cited, and where the final
-    outputs live. Written once per completed job to 09_LOGS/, separate from
-    (and outliving) the checkpoint file, which is really just working state
-    for the resume logic rather than a long-term record."""
+    """A durable, human-readable record of a completed job -- which topic,
+    how long each stage took (from checkpoint.stage_history), how many
+    scenes, what sources the research cited, and where the final outputs
+    live. Written once per completed job to 09_LOGS/, separate from (and
+    outliving) the checkpoint file."""
     manifest = {
         "job_id": cp.job_id,
         "topic_id": topic.id,
@@ -186,7 +200,7 @@ def _archive_job_manifest(paths, cp, topic, research: dict, total_scenes: int, v
     write_json_atomic(paths.job_manifest(cp.job_id), manifest)
 
 
-def run(max_jobs: int = 1, gh_token: str = "", models: dict | None = None) -> None:
+def run(max_jobs: int = 1, gh_token: str = "", models: dict = None) -> None:
     """Entry point called from the Colab notebook.
     max_jobs=1 processes one topic and stops (safest default for testing);
     raise it once Phase H's multi-video testing has passed.
@@ -202,13 +216,9 @@ def run(max_jobs: int = 1, gh_token: str = "", models: dict | None = None) -> No
         try:
             run_one_job(paths, config, gh_token=gh_token, models=models)
         except NoTopicsAvailable as e:
-            # Nothing was running -- safe to show idle.
             print(f"[factory] stopping: {e}")
             status.mark_idle(paths)
             break
         except Exception as e:
-            # A job actually failed mid-flight. run_one_job already wrote
-            # an "error" checkpoint + status before re-raising -- don't
-            # clobber that useful state with mark_idle().
             print(f"[factory] job failed, stopping: {e}")
             break

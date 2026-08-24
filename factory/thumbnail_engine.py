@@ -1,15 +1,13 @@
-"""Phase E -- real implementation.
+"""Real thumbnail implementation.
 
-Contract (unchanged):
+Contract:
   input:  a source scene image + the episode title
   output: paths.thumbnail(job_id) -- a PNG used by the dashboard's
           "most recent video" card.
 
 Composites the title text over the chosen frame with a dark gradient behind
-the text for legibility, rather than shipping a bare frame as the
-thumbnail. Falls back to a plain copy of the source image if PIL/font
-loading fails for any reason -- a thumbnail without a title overlay is
-still far better than no thumbnail at all.
+the text for legibility. Falls back to a plain copy of the source image if
+PIL/font loading fails for any reason.
 """
 
 from __future__ import annotations
@@ -32,13 +30,11 @@ def run(paths, job_id: str, source_image: str, title: str = "") -> str:
         return out
 
     try:
-        from PIL import Image, ImageDraw, ImageFont, ImageFilter
+        from PIL import Image, ImageDraw, ImageFont
 
         img = Image.open(source_image).convert("RGB")
         w, h = img.size
 
-        # Dark gradient at the bottom third so overlaid text stays legible
-        # regardless of what's in the underlying frame.
         gradient = Image.new("L", (1, h), color=0)
         for y in range(h):
             fade_start = int(h * 0.55)
@@ -76,7 +72,5 @@ def run(paths, job_id: str, source_image: str, title: str = "") -> str:
         return out
 
     except Exception:
-        # Legibility overlay failed for some reason -- ship the raw frame
-        # rather than nothing.
         shutil.copy(source_image, out)
         return out

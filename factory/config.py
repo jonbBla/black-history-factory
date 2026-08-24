@@ -6,16 +6,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # Portrait, tuned for short-form vertical video (Shorts/Reels/TikTok-style
-# 9:16). Image dims are FLUX-friendly (multiples of 16) at close to the
-# same aspect ratio as the video output, so video_engine.py's zoompan step
-# only has to do light cropping, not aggressive reframing.
+# 9:16). Image dims are close to the video's aspect ratio so video_engine.py's
+# zoompan step only has to do light cropping, not aggressive reframing.
 DEFAULTS = {
     "project_name": "Black History Factory",
     "language": "English",
     "target_video_minutes": 5,
     "image_width": 896,
     "image_height": 1600,
-    "scenes_per_minute": 10,
+    "scenes_per_minute": 6,
     "enable_music": True,
     "enable_subtitles": True,
     "video_width": 1080,
@@ -27,8 +26,8 @@ DEFAULTS = {
     # --- Art style (see prompts/ART_STYLE.md for the full writeup with
     # reference images) ---
     # This is THE single place the project's visual identity lives. Every
-    # scene's FLUX image_prompt inherits this via visual_bible.py, which
-    # locks it in and ignores anything the research model tries to suggest
+    # scene's image_prompt inherits this via visual_bible.py, which locks
+    # it in and ignores anything the research model tries to suggest
     # instead -- deliberately, so the series looks consistent across every
     # episode rather than drifting topic to topic. Change it here (and only
     # here) to change the look of every future video.
@@ -69,8 +68,7 @@ class Config:
         # this code before a setting existed), write the full merged set
         # back to disk. Otherwise a new default like art_style would only
         # ever live in memory -- invisible to anyone opening config.json to
-        # see or edit it, which is exactly the trap this comment is here to
-        # prevent falling back into.
+        # see or edit it.
         if not cfg_path.exists() or set(DEFAULTS) - set(on_disk):
             cfg_path.parent.mkdir(parents=True, exist_ok=True)
             with open(cfg_path, "w", encoding="utf-8") as f:

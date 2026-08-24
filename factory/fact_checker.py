@@ -1,6 +1,6 @@
-"""Phase C -- real implementation.
+"""Real fact-checker implementation.
 
-Contract (unchanged from the Phase A stub):
+Contract:
   input:  paths.research_raw(job_id) + a QwenClient
   output: paths.research_verified(job_id) -- same shape, but every claim's
           classification has been reviewed, and unsourced/low-confidence

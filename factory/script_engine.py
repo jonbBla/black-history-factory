@@ -1,6 +1,6 @@
-"""Phase D -- real implementation.
+"""Real narration-generation implementation.
 
-Contract (unchanged from the Phase A stub):
+Contract:
   input:  verified research package + topic title + config
           (target_video_minutes) + a QwenClient
   output: paths.narration_txt(job_id) -- plain text documentary narration

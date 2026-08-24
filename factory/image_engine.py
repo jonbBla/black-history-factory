@@ -1,6 +1,6 @@
-"""Phase E -- real implementation.
+"""Real image-generation implementation.
 
-Contract (unchanged):
+Contract:
   input:  scenes list (see scene_engine.py) + config (image_width,
           image_height) + a loaded image-generation pipeline (FLUX via
           load_flux(), OR SDXL-Lightning via load_sdxl_lightning() -- pick
@@ -11,10 +11,9 @@ Contract (unchanged):
 
 Checkpointing: an on_progress(completed_count) callback is invoked after
 EVERY image (not just per-job) so main.py can advance+push the checkpoint
-per image -- image generation is the slowest, most interruption-prone
-stage, per the spec. Any scene whose PNG already exists on Drive is
-skipped without calling the model again, so resuming after a crash never
-regenerates finished images.
+per image. Any scene whose PNG already exists on Drive is skipped without
+calling the model again, so resuming after a crash never regenerates
+finished images.
 """
 
 from __future__ import annotations
@@ -31,29 +30,25 @@ def load_flux(device: str = "cuda", low_vram: bool = True, load_in_4bit: bool = 
     """Call once in Colab Cell 4, e.g.:
         from factory.image_engine import load_flux
         models["flux"] = load_flux()
-    FLUX.1 Schnell is a distilled model designed for 1-4 inference steps --
-    that's what makes it viable to run per-scene inside a single Colab
-    session instead of needing 20-50 steps like most diffusion models.
+    FLUX.1 Schnell is a distilled model designed for 1-4 inference steps.
 
-    VRAM note, corrected: the 12B-parameter transformer ALONE is ~24GB in
-    bf16 -- already more than a free-tier T4's ~14.56GB by itself, before
-    the ~9.4GB T5 text encoder, CLIP, or VAE are even considered (full
-    pipeline download is ~34GB total, matching what Colab actually
-    downloads). enable_model_cpu_offload() (low_vram, still applied below)
-    only helps by keeping OTHER components off the GPU while one is
-    active -- it can't shrink the transformer itself, so on a T4 it isn't
-    enough on its own and the job will hit CUDA OOM the moment the
-    transformer's turn comes up, exactly as it would fail identically
-    whether Qwen is also loaded or not.
+    VRAM note: the 12B-parameter transformer ALONE is ~24GB in bf16 --
+    already more than a free-tier T4's ~14.56GB by itself, before the
+    ~9.4GB T5 text encoder, CLIP, or VAE are even considered (full
+    pipeline download is ~34GB total). enable_model_cpu_offload() only
+    helps by keeping OTHER components off the GPU while one is active --
+    it can't shrink the transformer itself, so on a T4 it isn't enough on
+    its own.
 
     load_in_4bit=True (the default) fixes the actual cause: it loads the
-    transformer AND the T5 text encoder with bitsandbytes NF4 quantization
-    (the same technique qwen_client.py uses for Qwen), cutting the
-    transformer to roughly 6GB and the T5 encoder to roughly 2.5GB --
-    small enough to coexist with 4-bit Qwen on a single T4. CLIP and the
-    VAE are left at full precision since they're small enough not to
-    matter. Set load_in_4bit=False only on a GPU with enough VRAM for the
-    full-precision pipeline (A100 40GB or similar).
+    transformer AND the T5 text encoder with bitsandbytes NF4
+    quantization, cutting the transformer to roughly 6GB and the T5
+    encoder to roughly 2.5GB. Set load_in_4bit=False only on a GPU with
+    enough VRAM for the full-precision pipeline (A100 40GB or similar).
+
+    Given the disk (~34GB download) and VRAM cost even quantized, consider
+    load_sdxl_lightning() instead unless you specifically need FLUX's
+    stronger prompt adherence.
     """
     from diffusers import FluxPipeline
     import torch
@@ -113,33 +108,27 @@ def load_flux(device: str = "cuda", low_vram: bool = True, load_in_4bit: bool = 
 
 
 def load_sdxl_lightning(device: str = "cuda", num_inference_steps: int = 4):
-    """Alternative to load_flux() for tight-VRAM sessions -- call at most
-    ONE of load_flux()/load_sdxl_lightning() in Cell 4, whichever fits your
-    Colab session, and pass its result as models["flux"] either way (the
-    image_engine.run() dispatcher below detects which kind of pipeline it
-    got automatically).
+    """Alternative to load_flux() -- call at most ONE of
+    load_flux()/load_sdxl_lightning() in Cell 4, whichever fits your Colab
+    session, and pass its result as models["flux"] either way (the run()
+    dispatcher below detects which kind of pipeline it got automatically).
 
-    SDXL-Lightning is a distilled Stable Diffusion XL variant supporting
-    1-8 step generation -- same speed idea as FLUX.1-schnell, but built on
-    SDXL's ~2.6B-parameter UNet rather than FLUX's 12B transformer. Full
-    pipeline is ~7GB in fp16 -- comfortably fits a T4 alongside Qwen with
-    NO quantization tricks needed, and downloads roughly 5x less data than
-    FLUX (~7GB vs ~34GB), directly helping the disk-space problem too.
+    Recommended default: SDXL-Lightning is a distilled Stable Diffusion XL
+    variant supporting 1-8 step generation, built on SDXL's ~2.6B-parameter
+    UNet rather than FLUX's 12B transformer. Full pipeline is ~7GB in
+    fp16 -- comfortably fits a T4 alongside Qwen with NO quantization
+    tricks needed, and downloads roughly 5x less data than FLUX.
 
-    Tradeoffs vs FLUX, worth knowing before you pick:
-    - Prompt length: SDXL uses CLIP-only text encoding with a hard 77-token
-      limit; FLUX additionally uses a T5 encoder handling up to 256 tokens.
-      Long, detail-heavy scene prompts (like this project's, which combine
-      the visual bible + scene description) truncate more aggressively on
-      SDXL. scene_engine.py's prompt composition was tightened alongside
-      this to help, but SDXL will still drop more detail on long prompts.
-    - Photorealism and complex prompt adherence: FLUX is generally regarded
-      as stronger.
+    Tradeoffs vs FLUX:
+    - Prompt length: SDXL uses CLIP-only text encoding with a hard
+      77-token limit; FLUX additionally uses a T5 encoder handling up to
+      256 tokens. scene_engine.py's prompt composition is tuned for this
+      tighter SDXL budget by default.
+    - Photorealism and complex prompt adherence: FLUX is generally
+      regarded as stronger.
     - Painterly/stylized output: SDXL has a much larger ecosystem built
       around exactly this kind of non-photoreal, artistic style (which is
-      what this project's locked art_style calls for), so quality for THIS
-      specific use case may be comparable to or better than FLUX despite
-      SDXL being the "smaller" model.
+      what this project's locked art_style calls for).
     """
     from diffusers import StableDiffusionXLPipeline, EulerDiscreteScheduler
     from huggingface_hub import hf_hub_download
@@ -158,12 +147,11 @@ def load_sdxl_lightning(device: str = "cuda", num_inference_steps: int = 4):
     ).to(device)
     # Load the Lightning UNet weights to CPU first, then let load_state_dict
     # copy each tensor into the already-allocated (already-on-GPU) UNet
-    # parameters in place. Loading directly to GPU here (device=device)
-    # instead would briefly hold BOTH the original UNet (already resident
-    # from .to(device) above) and this new state dict as a full second
-    # GPU-resident copy at the same time -- exactly the kind of transient
-    # memory spike that OOMs a 14.56GB T4 regardless of how small either
-    # model is on its own.
+    # parameters in place. Loading directly to GPU here instead would
+    # briefly hold BOTH the original UNet (already resident from .to(device)
+    # above) and this new state dict as a full second GPU-resident copy at
+    # the same time -- exactly the kind of transient memory spike that OOMs
+    # a 14.56GB T4 regardless of how small either model is on its own.
     lightning_state_dict = load_file(hf_hub_download(lightning_repo, ckpt_name), device="cpu")
     pipe.unet.load_state_dict(lightning_state_dict)
     del lightning_state_dict
@@ -182,7 +170,7 @@ def _generate_one(pipe, prompt: str, width: int, height: int):
     if hasattr(pipe, "transformer"):
         # FLUX-style pipeline. Schnell is trained for guidance_scale=0 and
         # very few steps; max_sequence_length=256 uses the T5 encoder's
-        # full available context rather than the shorter CLIP-only default.
+        # full available context.
         result = pipe(
             prompt=prompt,
             width=width,
@@ -209,8 +197,8 @@ def _generate_one(pipe, prompt: str, width: int, height: int):
 def run(paths, job_id: str, scenes: list, config=None, flux=None, on_progress=None) -> list:
     out_dir = paths.images_dir(job_id)
     os.makedirs(out_dir, exist_ok=True)
-    width = getattr(config, "image_width", 1024) if config else 1024
-    height = getattr(config, "image_height", 1024) if config else 1024
+    width = getattr(config, "image_width", 896) if config else 896
+    height = getattr(config, "image_height", 1600) if config else 1600
 
     written = []
     for scene in scenes:
@@ -222,8 +210,6 @@ def run(paths, job_id: str, scenes: list, config=None, flux=None, on_progress=No
             continue
 
         if flux is None:
-            # No model loaded -- write a placeholder so downstream stages
-            # (audio duration matching, video assembly) can still run.
             with open(fname, "wb") as f:
                 f.write(_PLACEHOLDER_PNG)
         else:
@@ -241,4 +227,3 @@ def run(paths, job_id: str, scenes: list, config=None, flux=None, on_progress=No
             on_progress(len(written))
 
     return written
-  
