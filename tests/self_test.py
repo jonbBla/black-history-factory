@@ -1,20 +1,13 @@
-"""Phase H tooling: a local, no-GPU sanity check for the whole pipeline.
+"""Local, no-GPU sanity check for the whole pipeline.
 
-Runs main.run_one_job() against a mock Qwen client (so no model download or
-GPU is needed) but through the REAL video_engine/thumbnail_engine, which
-only need ffmpeg/PIL. This catches integration breakage -- wrong function
-signatures, bad file paths, checkpoint/resume regressions, ffmpeg command
-errors -- before you spend Colab GPU time on a real run.
-
-It does NOT validate research quality, narration quality, or image/audio
-fidelity -- only that the pipeline runs, checkpoints, resumes, and produces
-non-empty output files at every stage.
+Runs main.run_one_job() against a mock Qwen client (no model download or
+GPU needed) but through the REAL video_engine/thumbnail_engine, which only
+need ffmpeg/PIL. Catches integration breakage before you spend Colab GPU
+time on a real run.
 
 Usage:
     cd black-history-factory
     python3 tests/self_test.py
-
-Exits non-zero on any failed assertion.
 """
 
 from __future__ import annotations
@@ -99,20 +92,13 @@ def _reset_topics(paths):
 def main_test():
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     with tempfile.TemporaryDirectory(prefix="bhf_selftest_") as tmp_root:
-        # Work on a throwaway copy so this never touches real 00_CONFIG/01_TOPICS.
         paths = DrivePaths(root=tmp_root)
         paths.ensure_tree()
-        shutil.copy(os.path.join(project_root, "00_CONFIG", "config.json"),
-                    paths.config_json)
-        shutil.copy(os.path.join(project_root, "01_TOPICS", "topics.json"),
-                    paths.topics_json)
+        shutil.copy(os.path.join(project_root, "00_CONFIG", "config.json"), paths.config_json)
+        shutil.copy(os.path.join(project_root, "01_TOPICS", "topics.json"), paths.topics_json)
         write_json_atomic(paths.used_topics_json, [])
         write_json_atomic(paths.rejected_topics_json, [])
         config = Config.load(paths.root)
-        # This suite cares about integration correctness (right files in the
-        # right places, checkpointing, resume, error handling) -- not render
-        # fidelity, which is already verified separately at full resolution
-        # during development. Keep renders cheap so this runs in seconds.
         config.values["enable_subtitles"] = False
         config.values["video_width"] = 320
         config.values["video_height"] = 240
@@ -194,6 +180,22 @@ def main_test():
         vb = read_json(paths.visual_bible_json(leak_cp.job_id))
         _check("locked style used, model value ignored",
                 "SHOULD NEVER APPEAR" not in vb["style"] and vb["style"] == config.art_style)
+
+        print("8. Qwen offload/restore fires at exactly the right points")
+        _reset_topics(paths)
+
+        class TrackedQwen(MockQwen):
+            def __init__(self):
+                super().__init__()
+                self.device_calls = []
+            def offload_to_cpu(self):
+                self.device_calls.append("offload")
+            def restore_to_gpu(self):
+                self.device_calls.append("restore")
+
+        tracked = TrackedQwen()
+        main.run_one_job(paths, config, models={"qwen": tracked})
+        _check("offload/restore sequence correct", tracked.device_calls == ["restore", "offload"])
 
     print("\nAll self-tests passed.")
 
