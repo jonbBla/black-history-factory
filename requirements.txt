@@ -1,15 +1,15 @@
-# --- Phase A (foundation) — needed now ---
+# --- Foundation ---
 google-colab; sys_platform != "win32"  # only present inside Colab itself
 requests
 python-slugify
 
-# --- Phase C (research) — active now that Qwen is wired in ---
+# --- Research (Qwen) ---
 transformers
 accelerate
-bitsandbytes  # 4-bit quantization for Qwen -- see qwen_client.py's load_in_4bit note
+bitsandbytes  # 4-bit quantization -- see qwen_client.py's load_in_4bit note
 torch
 
-# --- Phase E (media) — active now that image/audio/video engines are wired in ---
+# --- Media ---
 diffusers
 safetensors
 piper-tts
