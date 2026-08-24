@@ -1,4 +1,4 @@
-// The dashboard only ever reads these two JSON files — it never talks to
+// The dashboard only ever reads these two JSON files -- it never talks to
 // Colab directly. factory/github.py pushes fresh copies here on every
 // checkpoint advance.
 const CURRENT_URL = "data/current.json";
@@ -19,13 +19,8 @@ function statusPillHtml(status) {
 }
 
 // If the last status push claims "running" but it's far older than the
-// factory's own push cadence (every checkpoint advance -- at minimum once
-// per image/audio file, well under a minute apart in practice), the most
-// likely explanation is that Colab's session ended mid-job rather than the
-// job being unusually slow. current.json has no way to know this on its
-// own since nothing pushes a "the session ended" event -- so the dashboard
-// infers it from silence instead, matching the spec's
-// "🟡 Paused / Reason: Colab session ended" state.
+// factory's own push cadence, the most likely explanation is that Colab's
+// session ended mid-job rather than the job being unusually slow.
 const STALE_MS = 3 * 60 * 1000;
 
 function isStale(data) {
