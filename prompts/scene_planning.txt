@@ -4,7 +4,24 @@ roughly {scenes_per_minute} scenes per minute of narration.
 For each scene return: scene_id, duration (seconds), narration (the exact
 text spoken during this scene), location, period, characters, objects,
 camera (one of: zoom_in, zoom_out, pan_left, pan_right, pan_up, pan_down,
-slow_push, slow_pull), transition (e.g. crossfade).
+slow_push, slow_pull), transition (e.g. crossfade), and visual_focus.
+
+visual_focus is the single most important field for image generation: a
+short (8-15 word) concrete description of the main subject and what it's
+doing/showing in THIS scene, written like an image-generation prompt
+fragment -- NOT a restatement or summary of the narration. Use concrete
+nouns and visible details (a person, an object, an action, a setting
+feature), not abstract ideas, historical claims, or anything that can't
+be literally seen in a single still image. The image model generating
+from this has weak prompt-following, so give it ONE clear subject/action
+to focus on, not a list of several things happening at once.
+
+Bad visual_focus (abstract, not a visual subject):
+"The importance of trade routes connecting West Africa to the wider
+world through Saharan commerce."
+
+Good visual_focus (one concrete subject and action):
+"a camel caravan crossing dunes at dusk, loaded with salt slabs"
 
 Narration:
 {narration_text}
