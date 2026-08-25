@@ -48,9 +48,11 @@ VISUAL_BIBLE = {
 
 SCENES = [
     {"scene_id": 1, "duration": 1, "narration": "Opening hook line.", "location": "riverside",
-     "period": "4th century", "characters": [], "objects": [], "camera": "zoom_in", "transition": "crossfade"},
+     "period": "4th century", "characters": [], "objects": [], "camera": "zoom_in", "transition": "crossfade",
+     "visual_focus": "an ancient stone reservoir wall beside a river at dawn"},
     {"scene_id": 2, "duration": 1, "narration": "The discovery.", "location": "ruins",
-     "period": "modern", "characters": [], "objects": [], "camera": "pan_left", "transition": "crossfade"},
+     "period": "modern", "characters": [], "objects": [], "camera": "pan_left", "transition": "crossfade",
+     "visual_focus": "archaeologists examining excavated stone ruins"},
 ]
 
 
@@ -196,6 +198,21 @@ def main_test():
         tracked = TrackedQwen()
         main.run_one_job(paths, config, models={"qwen": tracked})
         _check("offload/restore sequence correct", tracked.device_calls == ["restore", "offload"])
+
+        print("9. image_prompt uses visual_focus, stays short, and doesn't duplicate location")
+        _reset_topics(paths)
+        focus_cp = main.run_one_job(paths, config, models={"qwen": MockQwen()})
+        scenes_out = read_json(paths.scenes_json(focus_cp.job_id))
+        for s in scenes_out:
+            prompt = s["image_prompt"]
+            _check(f"scene {s['scene_id']} prompt uses visual_focus verbatim",
+                    s["visual_focus"] in prompt)
+            _check(f"scene {s['scene_id']} prompt has no location duplication",
+                    prompt.count(s["location"]) <= 1 if s.get("location") else True)
+            _check(f"scene {s['scene_id']} prompt has no leftover camera text",
+                    "camera movement" not in prompt)
+            _check(f"scene {s['scene_id']} prompt is reasonably short (<=30 words)",
+                    len(prompt.split()) <= 30)
 
     print("\nAll self-tests passed.")
 
