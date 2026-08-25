@@ -60,6 +60,19 @@ your Drive, so your real topic list is safe across code updates.
 
 ## Install -- step by step
 
+### Model size tiers
+
+| Tier | Text | Image | Combined storage/VRAM | Quality |
+|---|---|---|---|---|
+| **Lightest** (default) | Qwen 1.5B, no quantization | SD-Turbo (`load_sd_turbo()`) | ~6GB | Weakest narration; visible quality loss at portrait resolution (SD-Turbo's native res is 512x512) |
+| Balanced | Qwen 3B | SDXL-Lightning (`load_sdxl_lightning()`) | ~13GB | Good middle ground |
+| Heaviest | Qwen 3B/7B, 4-bit | FLUX (`load_flux()`, 4-bit) | ~10-20GB+ | Best prompt adherence/photorealism, needs the most headroom and quantization to fit a T4 at all |
+
+Pick the tier matching your actual constraint (a strict combined ≤10GB
+across RAM/VRAM/storage needs the Lightest tier) by editing the model
+names/loader calls in Cell 4 -- both alternatives are already there as
+commented-out lines.
+
 ### 1. Create the GitHub repository, push this code
 
 Create a repo, push everything in this folder to it.
