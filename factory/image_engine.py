@@ -3,10 +3,11 @@
 Contract:
   input:  scenes list (see scene_engine.py) + config (image_width,
           image_height) + a loaded image-generation pipeline (FLUX via
-          load_flux(), OR SDXL-Lightning via load_sdxl_lightning() -- pick
-          ONE in Cell 4 depending on available VRAM/disk, pass whichever
-          you loaded as models["flux"] either way; run() below detects
-          which kind it got automatically)
+          load_flux(), SDXL-Lightning via load_sdxl_lightning(), OR
+          SD-Turbo via load_sd_turbo() -- pick ONE in Cell 4 depending on
+          available VRAM/disk, pass whichever you loaded as
+          models["flux"] either way; run() below detects which kind it
+          got automatically)
   output: paths.images_dir(job_id)/scene_{NNN}.png -- one file per scene.
 
 Checkpointing: an on_progress(completed_count) callback is invoked after
@@ -162,6 +163,41 @@ def load_sdxl_lightning(device: str = "cuda", num_inference_steps: int = 4):
     pipe.scheduler = EulerDiscreteScheduler.from_config(
         pipe.scheduler.config, timestep_spacing="trailing"
     )
+    pipe._num_inference_steps = num_inference_steps  # stashed for _generate_one below
+    return pipe
+
+
+def load_sd_turbo(device: str = "cuda", num_inference_steps: int = 2):
+    """Alternative to load_flux()/load_sdxl_lightning() for the tightest
+    possible resource budget -- call at most ONE image-loader function in
+    Cell 4, whichever you pick lands in models["flux"], and run() below
+    detects which kind it got automatically (no special-casing needed:
+    SD-Turbo's pipeline, like SDXL-Lightning's, has no `.transformer`
+    attribute, so it falls into the same dispatch branch in
+    _generate_one() below).
+
+    SD-Turbo is built on Stable Diffusion 2.1's architecture (a single
+    ~865M-parameter UNet and a single CLIP text encoder) rather than
+    SDXL's 2.6B-parameter UNet with dual text encoders. Total pipeline
+    download is roughly 2.5-3GB -- smaller than SDXL-Lightning's ~7GB,
+    dramatically smaller than FLUX's ~34GB. This is the lightest of the
+    three image backends on storage, VRAM, and generation speed (1-2
+    steps is enough).
+
+    Real quality cost: SD-Turbo's native/best resolution is 512x512.
+    Generating at this project's configured portrait resolution (e.g.
+    896x1600) works, but with more visible quality degradation than
+    either FLUX or SDXL-Lightning would show at the same resolution.
+    Use this when disk/VRAM/RAM headroom matters more than image
+    fidelity.
+    """
+    from diffusers import AutoPipelineForText2Image
+    import torch
+
+    pipe = AutoPipelineForText2Image.from_pretrained(
+        "stabilityai/sd-turbo", torch_dtype=torch.float16, variant="fp16"
+    )
+    pipe.to(device)
     pipe._num_inference_steps = num_inference_steps  # stashed for _generate_one below
     return pipe
 
