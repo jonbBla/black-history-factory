@@ -199,7 +199,46 @@ def load_sd_turbo(device: str = "cuda", num_inference_steps: int = 2):
     )
     pipe.to(device)
     pipe._num_inference_steps = num_inference_steps  # stashed for _generate_one below
+    pipe._native_resolution = 512  # stashed for _dims_for_generation below
     return pipe
+
+
+def _dims_for_generation(pipe, config_width: int, config_height: int):
+    """Picks the actual width/height to hand to the model, which is NOT
+    always this project's configured portrait canvas size.
+
+    SD-Turbo is trained/optimized around 512x512. Forcing it to generate
+    directly at a tall portrait target (e.g. 896x1600, aspect ratio ~1.79)
+    causes a well-documented diffusion artifact: the model doesn't know
+    how to compose the full unfamiliar canvas, so it repeats a small
+    learned pattern block to fill it -- visible as a repetitive tiled
+    look (identical windows/balconies/lamps stacked over and over) rather
+    than a naturally varied single scene.
+
+    The fix generates at a resolution that keeps the SAME target aspect
+    ratio (so video_engine.py's existing scale+crop step doesn't have to
+    throw away an unreasonable fraction of the image) while keeping the
+    total pixel count close to the model's comfortable ~512x512 budget --
+    both matter: matching only total area (e.g. plain 512x512) would
+    force a much more aggressive crop later, and matching only aspect
+    ratio at full size is exactly the problem being fixed.
+
+    FLUX and SDXL-Lightning don't get this treatment: FLUX handles
+    arbitrary resolutions reasonably, and SDXL was trained across multiple
+    aspect-ratio buckets including portrait, so config's actual target
+    resolution is fine for both.
+    """
+    native = getattr(pipe, "_native_resolution", None)
+    if not native or config_width <= 0 or config_height <= 0:
+        return config_width, config_height
+
+    aspect = config_height / config_width
+    gen_width = int(round((native * native / aspect) ** 0.5))
+    gen_height = int(round(gen_width * aspect))
+    # Diffusion UNets require dimensions divisible by 8 (latent downsampling).
+    gen_width = max(8, (gen_width // 8) * 8)
+    gen_height = max(8, (gen_height // 8) * 8)
+    return gen_width, gen_height
 
 
 def _generate_one(pipe, prompt: str, width: int, height: int):
@@ -250,8 +289,9 @@ def run(paths, job_id: str, scenes: list, config=None, flux=None, on_progress=No
                 f.write(_PLACEHOLDER_PNG)
         else:
             prompt = scene.get("image_prompt", "")
+            gen_width, gen_height = _dims_for_generation(flux, width, height)
             try:
-                image = _generate_one(flux, prompt, width, height)
+                image = _generate_one(flux, prompt, gen_width, gen_height)
                 image.save(fname)
             except Exception as e:
                 raise RuntimeError(
