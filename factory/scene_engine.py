@@ -1,47 +1,43 @@
 """Phase D -- real implementation.
 
-Contract (unchanged):
+Contract:
   input:  narration text + visual bible + config (scenes_per_minute,
           target_video_minutes) + a QwenClient
   output: paths.scenes_json(job_id) -- list of scene dicts:
     { scene_id, duration, narration, location, period, characters,
-      objects, camera, transition, image_prompt }
+      objects, camera, transition, visual_focus, image_prompt }
 
-Design decision: the Qwen call asks ONLY for narration segmentation and
-blocking (location/period/characters/objects/camera/transition) -- it does
-NOT ask the model to write image_prompt. image_prompt is instead composed
-programmatically here from the shared visual_bible + this scene's own
-fields.
+image_prompt composition, redesigned around SD-Turbo's actual needs (the
+default image backend, see image_engine.py): SD-Turbo's prompt-following
+is explicitly weaker than SDXL/FLUX, and this project runs it at
+guidance_scale=0 for 1-4 step speed, which also means negative-style
+phrasing ("not photoreal") gets essentially no benefit from classifier-free
+guidance. A short, single-subject prompt reliably outperforms a long,
+multi-clause one on a weak-alignment model -- cramming many disconnected
+fragments into one prompt (the previous approach: style + lighting +
+region + architecture + clothing + materials + location, each separately
+trimmed) gives the model too much to juggle, and it tends to fall back on
+whichever tokens dominate (the shared style text), which is why every
+image was coming out looking nearly identical regardless of scene content.
 
-image_prompt budget, corrected against REAL observed data: SDXL-Lightning
-(the default image backend, see image_engine.py) uses CLIP text encoding
-with a hard 77-token limit -- and unlike a generic ~1.3 tokens/word
-estimate, actual logged output on this project's own content showed a
-~2.07 tokens/word ratio (specialized/foreign vocabulary like "djellabas"
-and "chiaroscuro" splits into more subword tokens than plain English).
-That means the real safe word budget is roughly 35 words, not ~57. Content
-past the budget is silently and completely dropped by CLIP, not gracefully
-degraded -- so this composes the prompt with scene-differentiating content
-(location, characters, objects) prioritized ahead of shared style
-boilerplate, since losing a little style consistency on one image is a
-minor hit, while losing scene differentiation on EVERY image (which is
-what happened before this fix) makes the whole video look repetitive.
-lighting and materials are dropped entirely from the composed prompt --
-they're the lowest-information-per-word fields and largely redundant with
-style's own lighting description already.
+The fix follows a small, fixed slot structure instead:
+    [subject/situation] + [environment] + [style] + [lighting]
+Each slot is short and clean, not word-count-truncated mid-sentence.
+
+`visual_focus` (a Qwen-generated field, see prompts/scene_planning.txt) is
+the subject/situation slot -- Qwen writes a short, concrete, single-focus
+description of what's actually visible in the scene, which is a much
+better source for this than trying to algorithmically synthesize one from
+scattered location/characters/objects fields. Qwen understands the
+narrative; string concatenation never will. A fallback synthesizes
+something reasonable from those scattered fields only if visual_focus is
+missing (e.g. an older scenes.json from before this field existed, or the
+no-model placeholder path).
 
 Camera movement is deliberately NOT included in image_prompt: it's
 consumed directly from scene["camera"] by video_engine.py's zoompan filter
-AFTER the still image is generated. It was never doing anything useful as
-literal text in a still-image generation prompt.
-
-If you switch to FLUX (load_flux() in image_engine.py instead of
-load_sdxl_lightning()), this prompt is more conservative than FLUX's
-256-token T5 budget actually allows -- FLUX could handle significantly
-more detail. That's an accepted tradeoff for now since SDXL-Lightning is
-the recommended default; a backend-aware prompt length (computed at
-generation time in image_engine.py rather than baked in here) would be a
-cleaner fix if FLUX becomes the primary path again.
+AFTER the still image is generated -- it was never doing anything useful
+as literal text in a still-image generation prompt.
 """
 
 from __future__ import annotations
@@ -72,9 +68,9 @@ def build_prompt(narration_text: str, config) -> str:
 
 
 def _trim(text: str, max_words: int) -> str:
-    """Cuts to a maximum word count rather than letting the tokenizer cut
-    wherever it happens to land -- deliberate, budgeted truncation instead
-    of unpredictable mid-sentence loss."""
+    """Cuts to a maximum word count -- used only as a final safety cap on
+    already-short content, not as the primary way of shortening a long
+    field (see _trim_by_clauses for that)."""
     if not text:
         return ""
     words = text.split()
@@ -83,29 +79,78 @@ def _trim(text: str, max_words: int) -> str:
     return " ".join(words[:max_words]).rstrip(".,;:")
 
 
+def _trim_by_clauses(text: str, max_clauses: int) -> str:
+    """Splits on commas and keeps the first N clauses. config.art_style is
+    already written as comma-separated tags (see config.py), so cutting at
+    a clause boundary produces a clean, grammatically complete short
+    phrase -- unlike _trim()'s word-count cut, which can end awkwardly
+    mid-clause (e.g. "...traditional attire such")."""
+    if not text:
+        return ""
+    clauses = [c.strip() for c in text.split(",") if c.strip()]
+    return ", ".join(clauses[:max_clauses])
+
+
+def _fallback_subject(scene: dict, visual_bible: dict) -> str:
+    """Only used if Qwen didn't return visual_focus. Synthesizes a single
+    short phrase from whatever scattered fields ARE available, rather than
+    the old approach of including all of them separately."""
+    chars = scene.get("characters") or []
+    objs = scene.get("objects") or []
+    bits = (chars[:1] + objs[:1]) or [scene.get("location", "") or visual_bible.get("environment", "")]
+    return ", ".join(b for b in bits if b) or "a historical scene"
+
+
 def _compose_image_prompt(scene: dict, visual_bible: dict) -> str:
-    parts = [_trim(visual_bible.get("style", ""), 7)]
+    # 1. Subject/situation -- the single most important slot. Qwen writes
+    # this as an already-complete visual description INCLUDING setting
+    # (see prompts/scene_planning.txt's example: "...crossing dunes at
+    # dusk..."), so when it's present, a separate location/environment
+    # slot would just repeat what's already in it -- wasted tokens on
+    # redundancy, which actively hurts a weak-alignment model rather than
+    # helping. Only the fallback path (visual_focus missing) needs an
+    # explicit environment slot, since the fallback subject doesn't
+    # naturally include one.
+    subject = (scene.get("visual_focus") or "").strip()
+    has_visual_focus = bool(subject)
+    if not has_visual_focus:
+        subject = _fallback_subject(scene, visual_bible)
 
-    location = scene.get("location", "") or visual_bible.get("environment", "")
-    if location:
-        parts.append(_trim(location, 5))
+    parts = [subject]
 
+    if not has_visual_focus:
+        environment = scene.get("location", "") or visual_bible.get("environment", "")
+        if environment:
+            parts.append(environment)
+
+    # 2. Period/region -- brief historical grounding, distinct from
+    # physical setting, so this is kept even when visual_focus already
+    # covers the setting.
     period_region = ", ".join(
         p for p in [visual_bible.get("period", ""), visual_bible.get("region", "")] if p
     )
     if period_region:
         parts.append(period_region)
 
-    if scene.get("characters"):
-        parts.append(", ".join(scene["characters"][:2]))
-    if scene.get("objects"):
-        parts.append(", ".join(scene["objects"][:2]))
+    # 3. Style -- the locked, series-wide look (see config.art_style),
+    # cut at a clause boundary rather than mid-sentence.
+    style_tag = _trim_by_clauses(visual_bible.get("style", ""), 2)
+    if style_tag:
+        parts.append(style_tag)
 
-    parts.append(_trim(visual_bible.get("clothing", ""), 4))
-    parts.append(_trim(visual_bible.get("architecture", ""), 4))
+    # 4. Lighting -- short by construction already (see
+    # prompts/visual_bible.txt's "5-10 word phrase" instruction to Qwen);
+    # word-trim here is just a safety cap, not the primary shortening.
+    lighting_tag = _trim(visual_bible.get("lighting", ""), 6)
+    if lighting_tag:
+        parts.append(lighting_tag)
 
     joined = ", ".join(p for p in parts if p)
-    return _trim(joined, 35)  # absolute ceiling regardless of how verbose any field is
+    # SD-Turbo benefits from a short, focused prompt as a matter of
+    # quality, not just fitting a token budget -- this cap is intentionally
+    # tighter than the ~37-word hard CLIP limit computed from this
+    # project's own observed tokenization ratio.
+    return _trim(joined, 30)
 
 
 def _normalize_scene(raw: dict, scene_id: int, visual_bible: dict) -> dict:
@@ -123,6 +168,7 @@ def _normalize_scene(raw: dict, scene_id: int, visual_bible: dict) -> dict:
         "objects": raw.get("objects") if isinstance(raw.get("objects"), list) else [],
         "camera": raw.get("camera") if raw.get("camera") in CAMERA_MOVES else DEFAULT_CAMERA,
         "transition": raw.get("transition") if isinstance(raw.get("transition"), str) and raw.get("transition") else DEFAULT_TRANSITION,
+        "visual_focus": raw.get("visual_focus", "") if isinstance(raw.get("visual_focus"), str) else "",
     }
     scene["image_prompt"] = _compose_image_prompt(scene, visual_bible)
     return scene
