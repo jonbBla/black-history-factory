@@ -167,7 +167,7 @@ def load_sdxl_lightning(device: str = "cuda", num_inference_steps: int = 4):
     return pipe
 
 
-def load_sd_turbo(device: str = "cuda", num_inference_steps: int = 2):
+def load_sd_turbo(device: str = "cuda", num_inference_steps: int = 4):
     """Alternative to load_flux()/load_sdxl_lightning() for the tightest
     possible resource budget -- call at most ONE image-loader function in
     Cell 4, whichever you pick lands in models["flux"], and run() below

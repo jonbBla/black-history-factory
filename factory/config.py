@@ -23,21 +23,28 @@ DEFAULTS = {
     "github_repo": "",          # e.g. "yourname/black-history-factory"
     "github_dashboard_path": "dashboard/data",
 
-    # --- Art style (see prompts/ART_STYLE.md for the full writeup with
-    # reference images) ---
+    # --- Art style (see prompts/ART_STYLE.md for the full writeup) ---
     # This is THE single place the project's visual identity lives. Every
     # scene's image_prompt inherits this via visual_bible.py, which locks
     # it in and ignores anything the research model tries to suggest
     # instead -- deliberately, so the series looks consistent across every
     # episode rather than drifting topic to topic. Change it here (and only
     # here) to change the look of every future video.
+    #
+    # "Digital concept art / matte painting" rather than oil painting,
+    # specifically because of SD-Turbo (the default image backend, see
+    # image_engine.py): oil-painting brushwork is stochastic, high-frequency
+    # texture that needs several denoising steps to resolve cleanly, and
+    # SD-Turbo only runs 1-4 steps by design. Concept art/matte painting
+    # renders with cleaner shape definition even at very few steps, while
+    # staying genuinely detailed (environment, lighting, atmosphere) rather
+    # than flat/simple. It's also less strongly pre-associated with any one
+    # specific cultural/regional archetype than "oil painting + warm
+    # lighting + old buildings" turned out to be in practice.
     "art_style": (
-        "historical cinematic oil realism, painterly brushwork, warm "
-        "directional late-afternoon or torchlight lighting, strong "
-        "chiaroscuro, muted earth-tone palette with selective warm accent "
-        "colors, wide cinematic documentary establishing-shot composition, "
-        "emphasis on cloth/stone/metal/skin texture, not photoreal, not "
-        "glossy 3D render"
+        "digital concept art, matte painting, richly detailed environment, "
+        "warm cinematic lighting, dramatic atmospheric depth, painterly "
+        "digital illustration, not photoreal, not flat cartoon"
     ),
 }
 
