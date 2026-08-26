@@ -167,7 +167,7 @@ def load_sdxl_lightning(device: str = "cuda", num_inference_steps: int = 4):
     return pipe
 
 
-def load_sd_turbo(device: str = "cuda", num_inference_steps: int = 16):
+def load_sd_turbo(device: str = "cuda", num_inference_steps: int = 100):
     """Alternative to load_flux()/load_sdxl_lightning() for the tightest
     possible resource budget -- call at most ONE image-loader function in
     Cell 4, whichever you pick lands in models["flux"], and run() below
@@ -258,7 +258,7 @@ def _generate_one(pipe, prompt: str, width: int, height: int):
         # SDXL-Lightning-style pipeline. Also distilled for guidance_scale=0
         # and few steps, but has no max_sequence_length knob -- SDXL's CLIP
         # text encoders truncate at 77 tokens regardless.
-        steps = getattr(pipe, "_num_inference_steps", 16)
+        steps = getattr(pipe, "_num_inference_steps", 100)
         result = pipe(
             prompt=prompt,
             width=width,
