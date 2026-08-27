@@ -1,13 +1,9 @@
 Establish the shared visual rules for this documentary episode so every
 scene's image stays consistent (same architecture, clothing, materials,
-and environment).
+people, and environment).
 
 Series-wide style (do not deviate from this -- fill in the rest to match
-it): "historical cinematic oil realism, painterly brushwork, warm
-directional late-afternoon or torchlight lighting, strong chiaroscuro,
-muted earth-tone palette with selective warm accent colors, wide cinematic
-documentary establishing-shot composition, emphasis on cloth/stone/metal/
-skin texture, not photoreal, not glossy 3D render"
+it): "{art_style}"
 
 Topic: {topic_title}
 Region: {region}
@@ -15,9 +11,25 @@ Period: {period}
 Research context: {research_summary}
 
 Return a JSON object with keys: period, region, architecture, clothing,
-materials, environment, lighting, style. `style` should restate the
-series-wide style above; `lighting` should be a period/scene-appropriate
-specialization of it. Keep architecture/clothing/materials/environment
-SHORT -- 5-10 word phrases like an image-generation tag, not full
-sentences. Only architecture, clothing, materials, and environment should
-vary by topic.
+materials, environment, lighting, style, people.
+
+- `style` should restate the series-wide style above.
+- `lighting` should be a period/scene-appropriate specialization of it.
+- `people` describes the physical appearance appropriate to THIS region
+  and period -- specifically skin tone/complexion and any period-accurate
+  features. Write this factually and respectfully, grounded in the
+  region's actual historical population (e.g. "dark brown to deep black
+  skin tones, West African features" for a West African topic; "olive to
+  medium-brown skin tones, North African Berber and Arab features" for a
+  North African topic). Do not default to a generic or ambiguous
+  description -- being specific here is what keeps generated images
+  accurate to the actual people of this region and period, rather than
+  defaulting to whatever an image model's training bias favors.
+- `clothing` must name SPECIFIC garments/textiles/colors typical of the
+  region and period -- not generic terms like "traditional clothing" or
+  "African attire". Bad: "traditional clothing". Good: "indigo-dyed
+  boubou robes, woven kente sashes, cowrie-shell jewelry".
+- Keep architecture/clothing/materials/environment/people SHORT -- 5-10
+  word phrases like an image-generation tag, not full sentences.
+- Only architecture, clothing, materials, environment, and people should
+  vary by topic; style should always restate the series-wide style.

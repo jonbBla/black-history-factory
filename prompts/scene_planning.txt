@@ -2,7 +2,7 @@ Break the narration below into visual scenes for a documentary, at
 roughly {scenes_per_minute} scenes per minute of narration.
 
 Established visual bible for this episode (already locked in -- use it,
-don't invent different architecture/clothing/materials):
+don't invent different architecture/clothing/materials/people):
 {visual_bible_summary}
 
 For each scene return: scene_id, duration (seconds), narration (the exact
@@ -11,15 +11,19 @@ camera (one of: zoom_in, zoom_out, pan_left, pan_right, pan_up, pan_down,
 slow_push, slow_pull), transition (e.g. crossfade), and visual_focus.
 
 visual_focus is the single most important field for image generation: a
-short (10-18 word) concrete description of the main subject and what it's
+short (12-20 word) concrete description of the main subject and what it's
 doing/showing in THIS SPECIFIC scene, written like an image-generation
 prompt fragment -- NOT a restatement or summary of the narration, and NOT
 generic. Requirements:
 - Must describe something that ONLY belongs to this scene's narration
   segment, not something that could apply to any scene in the episode.
-- Must incorporate the established clothing/attire from the visual bible
-  above when a person is shown -- do not leave attire unspecified or
-  invent different clothing than what's locked in.
+- Whenever a person appears, visual_focus MUST explicitly state their
+  skin tone/complexion and specific attire, both taken directly from the
+  established visual bible's "people" and "clothing" fields above -- do
+  not leave this unspecified, do not invent different attire or
+  appearance than what's locked in, and do not use vague terms like
+  "a person" or "traditional dress" when the visual bible gives you
+  something specific to use instead.
 - Use concrete nouns and visible details (a person, an object, an action,
   a setting feature), not abstract ideas, historical claims, or anything
   that can't be literally seen in a single still image.
@@ -30,13 +34,13 @@ Bad visual_focus (abstract, not a visual subject):
 "The importance of trade routes connecting West Africa to the wider
 world through Saharan commerce."
 
-Bad visual_focus (generic, could be any scene, ignores established attire):
+Bad visual_focus (generic, ignores established people/clothing):
 "a person standing in a historical setting"
 
-Good visual_focus (one concrete subject and action, specific to this
-scene's narration, using the established attire):
-"a camel caravan crossing dunes at dusk, drivers in indigo-dyed robes,
-loaded with salt slabs"
+Good visual_focus (one concrete subject/action, specific to this scene,
+using the established skin tone and attire):
+"a dark-skinned West African trader in indigo-dyed boubou robes leading a
+camel caravan across dunes at dusk, salt slabs loaded on the camels"
 
 Narration:
 {narration_text}
