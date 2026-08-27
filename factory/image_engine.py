@@ -236,8 +236,8 @@ def _dims_for_generation(pipe, config_width: int, config_height: int):
     gen_width = int(round((native * native / aspect) ** 0.5))
     gen_height = int(round(gen_width * aspect))
     # Diffusion UNets require dimensions divisible by 8 (latent downsampling).
-    gen_width = max(8, (gen_width // 8) * 8)
-    gen_height = max(8, (gen_height // 8) * 8)
+    gen_width = max(8, (gen_width // 16) * 8)
+    gen_height = max(8, (gen_height // 16) * 8)
     return gen_width, gen_height
 
 
@@ -341,8 +341,8 @@ def _generate_one(pipe, prompt: str, width: int, height: int):
 def run(paths, job_id: str, scenes: list, config=None, flux=None, on_progress=None, upscaler=None) -> list:
     out_dir = paths.images_dir(job_id)
     os.makedirs(out_dir, exist_ok=True)
-    width = getattr(config, "image_width", 896) if config else 896
-    height = getattr(config, "image_height", 1600) if config else 1600
+    width = getattr(config, "image_width", 720) if config else 720
+    height = getattr(config, "image_height", 1080) if config else 1080
 
     written = []
     for scene in scenes:
