@@ -27,24 +27,24 @@ DEFAULTS = {
     # This is THE single place the project's visual identity lives. Every
     # scene's image_prompt inherits this via visual_bible.py, which locks
     # it in and ignores anything the research model tries to suggest
-    # instead -- deliberately, so the series looks consistent across every
-    # episode rather than drifting topic to topic. Change it here (and only
-    # here) to change the look of every future video.
+    # instead. Change it here (and only here) to change the look of every
+    # future video.
     #
-    # "Digital concept art / matte painting" rather than oil painting,
-    # specifically because of SD-Turbo (the default image backend, see
-    # image_engine.py): oil-painting brushwork is stochastic, high-frequency
-    # texture that needs several denoising steps to resolve cleanly, and
-    # SD-Turbo only runs 1-4 steps by design. Concept art/matte painting
-    # renders with cleaner shape definition even at very few steps, while
-    # staying genuinely detailed (environment, lighting, atmosphere) rather
-    # than flat/simple. It's also less strongly pre-associated with any one
-    # specific cultural/regional archetype than "oil painting + warm
-    # lighting + old buildings" turned out to be in practice.
+    # Cinematic 3D render / CGI, NOT any painting style, specifically
+    # because of SD-Turbo (the default image backend): painterly texture
+    # (oil, matte painting, watercolor -- anything with stochastic
+    # brushwork) needs several denoising steps to resolve cleanly, and
+    # SD-Turbo only runs 1-4 steps by design. 3D/CGI-render prompts are
+    # also a hugely well-represented category in general text-to-image
+    # training data, emphasizing defined surfaces/materials/lighting
+    # rather than painterly noise, so they render cleanly and sharply even
+    # at very few steps. It's also not tied to the same "European romantic
+    # painting" genre bias that pulled every earlier attempt toward a
+    # generic look regardless of the scene's actual intended content.
     "art_style": (
-        "digital concept art, matte painting, richly detailed environment, "
-        "warm cinematic lighting, dramatic atmospheric depth, painterly "
-        "digital illustration, not photoreal, not flat cartoon"
+        "cinematic 3D render, octane render, unreal engine style, "
+        "volumetric lighting, highly detailed textures, sharp focus, "
+        "dramatic atmosphere, not flat cartoon"
     ),
 }
 

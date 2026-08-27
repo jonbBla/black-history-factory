@@ -131,7 +131,8 @@ def _run_job_stages(paths, config, cp, topic, qwen, models, _push) -> Checkpoint
             cp.advance(paths, completed=n); _push()
 
         image_files = image_engine.run(paths, cp.job_id, scenes, config,
-                                        flux=models.get("flux"), on_progress=_image_progress)
+                                        flux=models.get("flux"), on_progress=_image_progress,
+                                        upscaler=models.get("upscaler"))
     else:
         image_files = sorted(
             os.path.join(paths.images_dir(cp.job_id), f)

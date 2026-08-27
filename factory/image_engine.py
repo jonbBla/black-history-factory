@@ -167,7 +167,7 @@ def load_sdxl_lightning(device: str = "cuda", num_inference_steps: int = 4):
     return pipe
 
 
-def load_sd_turbo(device: str = "cuda", num_inference_steps: int = 100):
+def load_sd_turbo(device: str = "cuda", num_inference_steps: int = 4):
     """Alternative to load_flux()/load_sdxl_lightning() for the tightest
     possible resource budget -- call at most ONE image-loader function in
     Cell 4, whichever you pick lands in models["flux"], and run() below
@@ -241,6 +241,75 @@ def _dims_for_generation(pipe, config_width: int, config_height: int):
     return gen_width, gen_height
 
 
+def load_upscaler(device: str = "cuda"):
+    """AI-based image enlargement (Real-ESRGAN x4), applied after
+    generation (see run()) instead of relying on ffmpeg's plain scaling in
+    video_engine.py -- that's what produced visibly blurry/pixelated
+    results when SD-Turbo's reduced generation resolution (see
+    _dims_for_generation) got stretched up toward the final video canvas.
+    Real-ESRGAN's model weights are only ~64MB -- negligible against this
+    project's resource budget -- and it runs a much smaller network than
+    full image generation, so its own time/VRAM footprint per image is
+    modest.
+
+    Known fragility, handled here rather than left to surprise you later:
+    the `basicsr` package (a Real-ESRGAN dependency) has a well-documented
+    compatibility break with newer torchvision releases, which removed
+    the `torchvision.transforms.functional_tensor` module basicsr imports.
+    This applies the standard workaround (aliasing the old import path)
+    before importing basicsr. If loading still fails for any reason, this
+    returns None rather than raising -- run() falls back to a high-quality
+    Lanczos resize instead of AI upscaling in that case. A missing
+    upscaler should never crash the whole pipeline over what's a quality
+    enhancement, not a correctness requirement.
+    """
+    try:
+        import sys
+        import torchvision.transforms.functional as _F
+        sys.modules.setdefault("torchvision.transforms.functional_tensor", _F)
+
+        import torch
+        from basicsr.archs.rrdbnet_arch import RRDBNet
+        from realesrgan import RealESRGANer
+        from huggingface_hub import hf_hub_download
+
+        weights_path = hf_hub_download("amd/realesrgan-x4plus", "RealESRGAN_x4plus.pth")
+        model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64,
+                         num_block=23, num_grow_ch=32, scale=4)
+        return RealESRGANer(
+            scale=4, model_path=weights_path, model=model,
+            tile=0, half=(device == "cuda"), device=device,
+        )
+    except Exception as e:
+        print(f"load_upscaler(): AI upscaler unavailable ({e}) -- "
+              f"images will use a Lanczos resize fallback instead.")
+        return None
+
+
+def _upscale_image(image, upscaler, target_width: int, target_height: int):
+    """Applies AI upscaling if an upscaler loaded successfully, else a
+    high-quality Lanczos resize toward the target resolution -- either way
+    the saved PNG ends up closer to the final target than SD-Turbo's small
+    native output, instead of leaving that gap for ffmpeg's plain scaling
+    to fill (badly) later in video_engine.py."""
+    from PIL import Image as PILImage
+
+    if upscaler is not None:
+        try:
+            import numpy as np
+            img_array = np.array(image.convert("RGB"))
+            output, _ = upscaler.enhance(img_array, outscale=4)
+            return PILImage.fromarray(output)
+        except Exception as e:
+            print(f"AI upscaling failed for one image ({e}) -- using Lanczos resize for it instead.")
+
+    scale = max(target_width / image.width, target_height / image.height, 1.0)
+    if scale <= 1.0:
+        return image
+    new_size = (max(1, int(image.width * scale)), max(1, int(image.height * scale)))
+    return image.resize(new_size, PILImage.LANCZOS)
+
+
 def _generate_one(pipe, prompt: str, width: int, height: int):
     if hasattr(pipe, "transformer"):
         # FLUX-style pipeline. Schnell is trained for guidance_scale=0 and
@@ -258,7 +327,7 @@ def _generate_one(pipe, prompt: str, width: int, height: int):
         # SDXL-Lightning-style pipeline. Also distilled for guidance_scale=0
         # and few steps, but has no max_sequence_length knob -- SDXL's CLIP
         # text encoders truncate at 77 tokens regardless.
-        steps = getattr(pipe, "_num_inference_steps", 100)
+        steps = getattr(pipe, "_num_inference_steps", 4)
         result = pipe(
             prompt=prompt,
             width=width,
@@ -269,7 +338,7 @@ def _generate_one(pipe, prompt: str, width: int, height: int):
     return result.images[0]
 
 
-def run(paths, job_id: str, scenes: list, config=None, flux=None, on_progress=None) -> list:
+def run(paths, job_id: str, scenes: list, config=None, flux=None, on_progress=None, upscaler=None) -> list:
     out_dir = paths.images_dir(job_id)
     os.makedirs(out_dir, exist_ok=True)
     width = getattr(config, "image_width", 896) if config else 896
@@ -292,6 +361,13 @@ def run(paths, job_id: str, scenes: list, config=None, flux=None, on_progress=No
             gen_width, gen_height = _dims_for_generation(flux, width, height)
             try:
                 image = _generate_one(flux, prompt, gen_width, gen_height)
+                # Upscale toward the target resolution BEFORE saving --
+                # AI upscaling if available, else a Lanczos fallback --
+                # rather than saving at SD-Turbo's small native output and
+                # leaving that gap for ffmpeg's plain scaling to fill
+                # later in video_engine.py, which is what produced visibly
+                # blurry/pixelated final video frames.
+                image = _upscale_image(image, upscaler, width, height)
                 image.save(fname)
             except Exception as e:
                 raise RuntimeError(

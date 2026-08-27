@@ -59,11 +59,22 @@ def _load_template(name: str) -> str:
         return f.read()
 
 
-def build_prompt(narration_text: str, config) -> str:
+def build_prompt(narration_text: str, visual_bible: dict, config) -> str:
     template = _load_template("scene_planning.txt")
+    vb = visual_bible or {}
+    visual_bible_summary = ", ".join(
+        f"{k}: {v}" for k, v in (
+            ("region", vb.get("region", "")),
+            ("period", vb.get("period", "")),
+            ("architecture", vb.get("architecture", "")),
+            ("clothing", vb.get("clothing", "")),
+            ("materials", vb.get("materials", "")),
+        ) if v
+    )
     return template.format(
         scenes_per_minute=config.scenes_per_minute,
         narration_text=narration_text,
+        visual_bible_summary=visual_bible_summary or "(none established yet)",
     )
 
 
@@ -184,7 +195,7 @@ def run(paths, job_id: str, narration_text: str, visual_bible: dict, config, qwe
         write_json_atomic(paths.scenes_json(job_id), scenes)
         return scenes
 
-    prompt = build_prompt(narration_text, config)
+    prompt = build_prompt(narration_text, visual_bible, config)
     try:
         raw_scenes = qwen.generate_json(prompt, max_new_tokens=3500)
     except ValueError as e:
