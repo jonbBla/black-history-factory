@@ -18,6 +18,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from PIL import Image
 from factory.drive import DrivePaths
 from factory.config import Config
 from factory import main, topic_engine
@@ -213,6 +214,34 @@ def main_test():
                     "camera movement" not in prompt)
             _check(f"scene {s['scene_id']} prompt is reasonably short (<=30 words)",
                     len(prompt.split()) <= 30)
+
+        print("10. image_mode='manual' pauses (not fails) and resumes once images are uploaded")
+        _reset_topics(paths)
+        config.values["image_mode"] = "manual"
+        try:
+            main.run_one_job(paths, config, models={"qwen": MockQwen()})
+            _check("manual mode raised WaitingForManualImages", False)
+        except main.WaitingForManualImages:
+            pass
+        manual_current = read_json(paths.status_current)
+        _check("status is 'paused', not 'error'", manual_current["status"] == "paused")
+        gallery_path = paths("04_IMAGES", "generating", "prompts.html")
+        _check("prompt gallery HTML was written", os.path.exists(gallery_path))
+        gallery_html = open(gallery_path, encoding="utf-8").read()
+        manual_job_id = find_in_progress_job(paths)
+        manual_scenes = read_json(paths.scenes_json(manual_job_id))
+        _check("gallery contains every pending scene's prompt",
+                all(s["image_prompt"] in gallery_html for s in manual_scenes))
+        _check("topic not marked used while paused", read_json(paths.used_topics_json) == [])
+
+        img_dir = paths.images_dir(manual_job_id)
+        os.makedirs(img_dir, exist_ok=True)
+        for s in manual_scenes:
+            Image.new("RGB", (64, 64), color=(60, 60, 60)).save(
+                os.path.join(img_dir, f"scene_{s['scene_id']:03d}.png"))
+        resumed_manual = main.run_one_job(paths, config, models={"qwen": MockQwen()})
+        _check("job resumed past manual pause and completed", resumed_manual.status == "completed")
+        config.values["image_mode"] = "auto"
 
     print("\nAll self-tests passed.")
 
