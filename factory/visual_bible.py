@@ -5,14 +5,22 @@ Contract:
           series-wide art_style) + a QwenClient
   output: a dict of visual rules shared by every scene's image prompt:
     { period, region, architecture, clothing, materials, environment,
-      lighting, style }
+      lighting, style, people }
 
 `style` is ALWAYS taken from config.art_style, never from the model --
 the whole point of a visual bible is series-wide consistency, and the art
 style was a deliberate one-time decision (see config.py), not something to
 re-derive per topic. `lighting` may be specialized per topic but stays
-within the locked style's overall look. Only architecture/clothing/
-materials/environment are genuinely topic-specific and come from the model.
+within the locked style's overall look. architecture/clothing/materials/
+environment/people are genuinely topic-specific and come from the model.
+
+`people` (skin tone/complexion and period-accurate physical features
+appropriate to the region) and `clothing` (specific garments/textiles, not
+generic terms) exist specifically so generated images accurately represent
+the region's actual population and dress rather than defaulting to
+whatever a weak-alignment image model's training bias favors -- see
+prompts/visual_bible.txt for exactly how Qwen is instructed to write these
+factually and respectfully, grounded in the region's real population.
 
 If Qwen's response is malformed or the call fails, this falls back to
 placeholders rather than failing the whole job.
@@ -35,7 +43,7 @@ def _load_template(name: str) -> str:
         return f.read()
 
 
-def build_prompt(topic, research: dict) -> str:
+def build_prompt(topic, research: dict, art_style: str) -> str:
     template = _load_template("visual_bible.txt")
     overview = (research or {}).get("overview", "") if isinstance(research, dict) else ""
     if not isinstance(overview, str):
@@ -45,6 +53,7 @@ def build_prompt(topic, research: dict) -> str:
         region=topic.region,
         period=topic.period,
         research_summary=overview[:1500],  # keep the prompt bounded
+        art_style=art_style,
     )
 
 
@@ -59,18 +68,19 @@ def run(topic, research: dict, config=None, qwen=None) -> dict:
         "clothing": "",
         "materials": "",
         "environment": "",
+        "people": "",
         "lighting": _DEFAULT_LIGHTING,
         "style": art_style,   # locked -- never overwritten below
     }
 
     if qwen is not None:
-        prompt = build_prompt(topic, research)
+        prompt = build_prompt(topic, research, art_style)
         try:
             result = qwen.generate_json(prompt, max_new_tokens=800)
         except ValueError:
             result = {}
         if isinstance(result, dict):
-            for key in ("architecture", "clothing", "materials", "environment"):
+            for key in ("architecture", "clothing", "materials", "environment", "people"):
                 val = result.get(key)
                 if isinstance(val, str) and val.strip():
                     base[key] = val.strip()
@@ -80,7 +90,7 @@ def run(topic, research: dict, config=None, qwen=None) -> dict:
             # `style` intentionally ignored even if the model returns one --
             # config.art_style is the single source of truth for the look.
 
-    for key in ("architecture", "clothing", "materials", "environment"):
+    for key in ("architecture", "clothing", "materials", "environment", "people"):
         if not base[key]:
             base[key] = "(not specified)"
 
