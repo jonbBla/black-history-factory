@@ -41,8 +41,26 @@ def _write_silence_wav(path: str, seconds: float = 3.0, rate: int = 22050) -> No
 
 
 def _synthesize(voice, text: str, path: str) -> None:
+    """Explicitly configures the output WAV file's parameters before
+    calling voice.synthesize() -- newer piper-tts releases don't always
+    set these internally the way older ones did, which produced a bare
+    Python `wave` module error ("# channels not specified") rather than a
+    message that pointed at the actual cause. Setting them here first is
+    safe even if the library also sets them internally: Python's wave
+    module allows re-setting header parameters as long as no audio data
+    has been written yet."""
     import wave as wave_mod
+
+    sample_rate = 22050
+    try:
+        sample_rate = voice.config.sample_rate
+    except AttributeError:
+        pass  # fall back to the default above rather than fail on this alone
+
     with wave_mod.open(path, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
         voice.synthesize(text, wav_file)
 
 

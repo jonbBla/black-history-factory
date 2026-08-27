@@ -24,6 +24,14 @@ class NoTopicsAvailable(RuntimeError):
     mid-job failure so main.run() knows it's safe to mark status idle."""
 
 
+class WaitingForManualImages(RuntimeError):
+    """Raised when config.image_mode == "manual" and not every scene has
+    an uploaded image yet. Distinct from a real failure: the checkpoint is
+    set to status="paused" (not "error") before this is raised, and the
+    topic is never marked used -- re-running later just checks again
+    whether enough images now exist."""
+
+
 def _get_or_start_job(paths) -> tuple:
     """Resume the in-progress job if one exists, otherwise pick a new topic
     and start a fresh job. Job ids and topic ids are separate namespaces --
@@ -61,12 +69,17 @@ def run_one_job(paths, config, gh_token: str = "", models: dict = None) -> Check
 
     try:
         return _run_job_stages(paths, config, cp, topic, qwen, models, _push)
+    except WaitingForManualImages:
+        # A legitimate pause, not a failure -- the checkpoint's status was
+        # already set to "paused" (not "error") before this was raised, so
+        # don't overwrite that here.
+        raise
     except Exception as e:
-        # Any stage failure marks the checkpoint as an error (visible on
-        # the dashboard) instead of silently dying or leaving current.json
-        # showing a stale "running" state. The topic is NOT marked used,
-        # so a later run will retry this exact job from wherever it
-        # stopped.
+        # Any real stage failure marks the checkpoint as an error (visible
+        # on the dashboard) instead of silently dying or leaving
+        # current.json showing a stale "running" state. The topic is NOT
+        # marked used, so a later run will retry this exact job from
+        # wherever it stopped.
         cp.fail(paths, str(e))
         _push()
         raise
@@ -125,6 +138,17 @@ def _run_job_stages(paths, config, cp, topic, qwen, models, _push) -> Checkpoint
 
     # --- images ---
     if not stage_output_exists(paths, cp.job_id, "image_generation", total_scenes):
+        image_mode = getattr(config, "image_mode", "auto")
+        if image_mode == "manual":
+            gallery_path = image_engine.write_prompt_gallery(paths, cp.job_id, scenes, cp.title)
+            cp.advance(paths, stage="image_generation", status="paused", total=total_scenes); _push()
+            raise WaitingForManualImages(
+                f"Waiting for manually generated images for job {cp.job_id}. "
+                f"Open {gallery_path} in a browser, generate each scene's image with "
+                f"your own tool, save them into {paths.images_dir(cp.job_id)} as "
+                f"scene_001.png, scene_002.png, etc., then re-run."
+            )
+
         cp.advance(paths, stage="image_generation", total=total_scenes, completed=0); _push()
 
         def _image_progress(n):
@@ -219,6 +243,9 @@ def run(max_jobs: int = 1, gh_token: str = "", models: dict = None) -> None:
         except NoTopicsAvailable as e:
             print(f"[factory] stopping: {e}")
             status.mark_idle(paths)
+            break
+        except WaitingForManualImages as e:
+            print(f"[factory] paused: {e}")
             break
         except Exception as e:
             print(f"[factory] job failed, stopping: {e}")

@@ -69,6 +69,7 @@ def build_prompt(narration_text: str, visual_bible: dict, config) -> str:
             ("architecture", vb.get("architecture", "")),
             ("clothing", vb.get("clothing", "")),
             ("materials", vb.get("materials", "")),
+            ("people", vb.get("people", "")),
         ) if v
     )
     return template.format(
@@ -105,11 +106,22 @@ def _trim_by_clauses(text: str, max_clauses: int) -> str:
 def _fallback_subject(scene: dict, visual_bible: dict) -> str:
     """Only used if Qwen didn't return visual_focus. Synthesizes a single
     short phrase from whatever scattered fields ARE available, rather than
-    the old approach of including all of them separately."""
+    the old approach of including all of them separately. If a character
+    is present, the established skin tone/complexion (visual_bible
+    "people") is appended so even this degraded fallback path doesn't lose
+    the same representation accuracy the primary Qwen-written path is
+    instructed to include."""
     chars = scene.get("characters") or []
     objs = scene.get("objects") or []
     bits = (chars[:1] + objs[:1]) or [scene.get("location", "") or visual_bible.get("environment", "")]
-    return ", ".join(b for b in bits if b) or "a historical scene"
+    subject = ", ".join(b for b in bits if b) or "a historical scene"
+
+    if chars:
+        people = visual_bible.get("people", "")
+        if people and people != "(not specified)":
+            subject = f"{subject}, {people}"
+
+    return subject
 
 
 def _compose_image_prompt(scene: dict, visual_bible: dict) -> str:

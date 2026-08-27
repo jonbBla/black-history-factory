@@ -23,6 +23,16 @@ DEFAULTS = {
     "github_repo": "",          # e.g. "yourname/black-history-factory"
     "github_dashboard_path": "dashboard/data",
 
+    # "auto" (default) generates images in-notebook via whichever backend
+    # is loaded (FLUX/SDXL-Lightning/SD-Turbo). "manual" instead writes a
+    # prompt gallery HTML page (see image_engine.write_prompt_gallery) and
+    # pauses the job -- no image generation happens in Colab at all. Open
+    # the gallery from Drive, generate each scene's image with whatever
+    # tool you choose, save them into the job's images folder (path shown
+    # on the page), then re-run -- the job resumes automatically once
+    # enough images are present, same as any other checkpointed stage.
+    "image_mode": "auto",
+
     # --- Art style (see prompts/ART_STYLE.md for the full writeup) ---
     # This is THE single place the project's visual identity lives. Every
     # scene's image_prompt inherits this via visual_bible.py, which locks

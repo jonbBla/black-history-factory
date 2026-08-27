@@ -15,6 +15,10 @@ EVERY image (not just per-job) so main.py can advance+push the checkpoint
 per image. Any scene whose PNG already exists on Drive is skipped without
 calling the model again, so resuming after a crash never regenerates
 finished images.
+
+Manual mode: write_prompt_gallery() below is a separate entry point used
+by main.py when config.image_mode == "manual" -- it never calls run(), and
+run() never calls it. See config.py's image_mode comment for the workflow.
 """
 
 from __future__ import annotations
@@ -236,8 +240,8 @@ def _dims_for_generation(pipe, config_width: int, config_height: int):
     gen_width = int(round((native * native / aspect) ** 0.5))
     gen_height = int(round(gen_width * aspect))
     # Diffusion UNets require dimensions divisible by 8 (latent downsampling).
-    gen_width = max(8, (gen_width // 16) * 8)
-    gen_height = max(8, (gen_height // 16) * 8)
+    gen_width = max(8, (gen_width // 8) * 8)
+    gen_height = max(8, (gen_height // 8) * 8)
     return gen_width, gen_height
 
 
@@ -341,8 +345,8 @@ def _generate_one(pipe, prompt: str, width: int, height: int):
 def run(paths, job_id: str, scenes: list, config=None, flux=None, on_progress=None, upscaler=None) -> list:
     out_dir = paths.images_dir(job_id)
     os.makedirs(out_dir, exist_ok=True)
-    width = getattr(config, "image_width", 720) if config else 720
-    height = getattr(config, "image_height", 1080) if config else 1080
+    width = getattr(config, "image_width", 896) if config else 896
+    height = getattr(config, "image_height", 1600) if config else 1600
 
     written = []
     for scene in scenes:
@@ -379,3 +383,112 @@ def run(paths, job_id: str, scenes: list, config=None, flux=None, on_progress=No
             on_progress(len(written))
 
     return written
+
+
+def _html_escape(text: str) -> str:
+    return (
+        (text or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def write_prompt_gallery(paths, job_id: str, scenes: list, title: str) -> str:
+    """Writes/overwrites a single HTML page (embedded CSS/JS, no external
+    files) listing the image_prompt for every scene that doesn't already
+    have a saved PNG -- open it from Drive in any browser, generate each
+    scene's image with whatever tool you choose, save it as
+    scene_{NNN:03d}.png into the folder shown on the page, then re-run the
+    notebook. main.py's normal checkpoint/resume logic (stage_output_exists
+    counting PNGs in that folder) handles picking the job back up once
+    enough images exist -- this function only ever produces the page; it
+    never checks or waits itself.
+
+    Only ONE file exists at a time
+    (04_IMAGES/generating/prompts.html) -- each call overwrites it rather
+    than accumulating one per job, matching a "work on this job's images,
+    then move on" workflow. Already-fulfilled scenes (a PNG already exists
+    for them) are left off the page, so re-opening it after uploading some
+    images shows only what's still needed.
+    """
+    out_images_dir = paths.images_dir(job_id)
+    os.makedirs(out_images_dir, exist_ok=True)
+    existing_ids = set()
+    for f in os.listdir(out_images_dir):
+        if f.startswith("scene_") and f.endswith(".png"):
+            try:
+                existing_ids.add(int(f[len("scene_"):-len(".png")]))
+            except ValueError:
+                pass
+
+    pending = [s for s in scenes if s["scene_id"] not in existing_ids]
+    done_count = len(scenes) - len(pending)
+
+    if pending:
+        cards = "\n".join(
+            f'''
+      <div class="scene-card">
+        <div class="scene-header">
+          <span class="scene-num">Scene {s['scene_id']}</span>
+          <span class="scene-file">save as: scene_{s['scene_id']:03d}.png</span>
+        </div>
+        <div class="scene-prompt" id="prompt-{s['scene_id']}">{_html_escape(s.get('image_prompt', ''))}</div>
+        <button class="copy-btn" onclick="copyPrompt({s['scene_id']}, this)">Copy prompt</button>
+      </div>'''
+            for s in pending
+        )
+        body_extra = cards
+    else:
+        body_extra = '<p class="done">All scenes have images on disk -- re-run the notebook to continue automatically.</p>'
+
+    html = f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Image Prompts -- {_html_escape(title)}</title>
+<style>
+  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          background:#0f0f12; color:#e8e6e1; max-width:720px; margin:0 auto; padding:1.5rem; }}
+  h1 {{ font-size:1.25rem; margin-bottom:0.25rem; }}
+  .meta {{ color:#8a8792; font-size:0.9rem; margin-bottom:1rem; }}
+  .save-path {{ background:#1a1a20; border:1px solid #2a2a32; border-radius:8px;
+                padding:0.75rem 1rem; font-family:ui-monospace, monospace; font-size:0.8rem;
+                margin-bottom:1.5rem; word-break:break-all; color:#d4a24e; }}
+  .scene-card {{ background:#1a1a20; border:1px solid #2a2a32; border-radius:10px;
+                 padding:1rem; margin-bottom:1rem; }}
+  .scene-header {{ display:flex; justify-content:space-between; font-size:0.78rem;
+                   color:#d4a24e; margin-bottom:0.5rem; }}
+  .scene-prompt {{ font-size:0.95rem; line-height:1.45; margin-bottom:0.75rem; }}
+  .copy-btn {{ background:#d4a24e; color:#1a1a20; border:none; border-radius:6px;
+              padding:0.45rem 1rem; font-weight:600; cursor:pointer; font-size:0.85rem; }}
+  .copy-btn.copied {{ background:#4caf7d; }}
+  .done {{ color:#4caf7d; font-size:0.95rem; }}
+</style>
+</head>
+<body>
+  <h1>{_html_escape(title)}</h1>
+  <p class="meta">{done_count}/{len(scenes)} scenes already have an image on disk. {len(pending)} remaining below.</p>
+  <div class="save-path">Save generated images to:<br>{_html_escape(out_images_dir)}</div>
+{body_extra}
+  <script>
+    function copyPrompt(id, btn) {{
+      const text = document.getElementById('prompt-' + id).innerText;
+      navigator.clipboard.writeText(text).then(() => {{
+        const original = btn.textContent;
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(() => {{ btn.textContent = original; btn.classList.remove('copied'); }}, 1500);
+      }});
+    }}
+  </script>
+</body>
+</html>'''
+
+    out_path = paths("04_IMAGES", "generating", "prompts.html")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(html)
+    return out_path
