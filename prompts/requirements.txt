@@ -1,0 +1,24 @@
+# --- Foundation ---
+google-colab; sys_platform != "win32"  # only present inside Colab itself
+requests
+python-slugify
+
+# --- Research (Qwen) ---
+transformers
+accelerate
+bitsandbytes  # 4-bit quantization -- see qwen_client.py's load_in_4bit note
+torch
+
+# --- Media ---
+diffusers
+safetensors
+piper-tts
+# AI image upscaling (see image_engine.py's load_upscaler) -- weights are
+# only ~64MB, negligible against the project's resource budget. Known
+# fragility: basicsr has a compatibility break with newer torchvision that
+# load_upscaler() works around at import time; if it still fails to load,
+# the pipeline falls back to a plain Lanczos resize automatically.
+realesrgan
+basicsr
+# video_engine.py shells out to the ffmpeg binary directly (see Colab Cell 2's
+# apt-get install) rather than using a Python ffmpeg wrapper package.

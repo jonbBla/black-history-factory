@@ -5,42 +5,52 @@ look like, and where is it set in code."**
 
 ## The style
 
-**Digital Concept Art / Matte Painting**
+**Cinematic 3D Render / CGI**
 
-- Richly detailed environments -- lighting, atmosphere, texture
-- Warm cinematic lighting, dramatic atmospheric depth
-- Not photoreal, not flat cartoon
+- Octane render, Unreal Engine style -- clean, well-defined surfaces
+- Volumetric lighting, dramatic atmosphere
+- Highly detailed textures, sharp focus
+- Not flat cartoon
 
 ## Why this style, specifically for SD-Turbo
 
-An earlier version of this style was "historical cinematic oil realism"
-(painterly brushwork, chiaroscuro). That was changed after real generated
-output showed two problems specific to running on SD-Turbo (the default
-image backend):
+This went through two earlier versions before landing here, each changed
+after real generated output revealed a problem:
 
-1. **Oil-painting brushwork is stochastic, high-frequency texture** that
-   needs several denoising steps to resolve cleanly. SD-Turbo only runs
-   1-4 steps by design -- asking it for brushwork texture at that step
-   count produced muddy, undefined results rather than clean detail.
-2. **"Oil painting + warm lighting + old buildings" is a heavily
-   over-represented genre** in general text-to-image training data
-   (atmospheric European city paintings are extremely common on art
-   sites). Combined with SD-Turbo's weak prompt alignment, this pulled
-   generations toward a generic "old European street at dusk" look
-   regardless of the scene's actual intended subject/region.
+1. **"Historical cinematic oil realism"** (painterly brushwork,
+   chiaroscuro) -- oil-painting brushwork is stochastic, high-frequency
+   texture that needs several denoising steps to resolve cleanly.
+   SD-Turbo only runs 1-4 steps by design, so this came out muddy.
+2. **"Digital concept art / matte painting"** -- cleaner than oil painting,
+   but still a *painting* category, and still produced results that
+   weren't detailed/sharp enough at the requested quality bar.
+3. **This version: cinematic 3D render / CGI** -- a completely different
+   rendering paradigm from painting. 3D/CGI-render prompts are a hugely
+   well-represented category in general text-to-image training data,
+   emphasizing defined surfaces, materials, and lighting rather than
+   painterly noise -- they render cleanly and sharply even at SD-Turbo's
+   very low step count. It's also not tied to the "European romantic
+   painting" genre bias that pulled earlier attempts toward a generic
+   look regardless of the scene's actual intended content.
 
-Digital concept art / matte painting renders with cleaner shape
-definition even at very few steps, stays genuinely detailed, and isn't
-as strongly pre-associated with one specific cultural/regional archetype.
+**This does not fully fix subject/content fidelity on its own.**
+SD-Turbo's weak prompt-following is a separate, more fundamental
+limitation from style choice. Two things DO help fidelity and were fixed
+alongside this style change:
+- `factory/scene_engine.py`'s scene-planning prompt now actually includes
+  the episode's locked visual bible (region, period, architecture,
+  clothing) when asking Qwen to write each scene's `visual_focus` --
+  previously it didn't, so Qwen was guessing at attire/setting blind.
+- `factory/image_engine.py` now AI-upscales each generated image (Real-
+  ESRGAN, falling back to Lanczos resize if unavailable) before saving,
+  instead of leaving SD-Turbo's small native resolution for ffmpeg to
+  stretch blurrily later in video_engine.py.
 
-**This does not fully fix subject/content fidelity.** SD-Turbo's weak
-prompt-following is a separate, more fundamental limitation from style
-choice -- a style change makes output cleaner and more detailed, but
-doesn't guarantee the model reliably depicts specific cultural/regional
-content (e.g. correctly rendering a Moroccan setting rather than a
-generic one) every time. If that fidelity matters more than the resource
-savings, the next tier up (SDXL-Lightning, see image_engine.py) has
-meaningfully stronger prompt adherence.
+If narration-content accuracy still isn't reliable enough after these
+fixes, the next tier up (SDXL-Lightning, see image_engine.py) has
+meaningfully stronger prompt adherence -- that's a model-capability
+ceiling, not something further prompt engineering on SD-Turbo can fully
+close.
 
 ## Where it lives in code
 
@@ -59,8 +69,8 @@ From there:
    discarded.
 2. `factory/scene_engine.py`'s `_compose_image_prompt()` puts the visual
    bible's `style` first in every scene's `image_prompt` string, cut at a
-   comma-boundary (not mid-word) to whatever length keeps the whole prompt
-   short and SD-Turbo-friendly (see that file's module docstring).
+   comma-boundary (not mid-word) to keep the whole prompt short and
+   SD-Turbo-friendly (see that file's module docstring).
 
 ## To change the look of every future video
 
