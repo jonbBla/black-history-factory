@@ -1,62 +1,13 @@
-"""Real narration-generation implementation.
-
-Contract:
-  input:  verified research package + topic title + config
-          (target_video_minutes) + a QwenClient
-  output: paths.narration_txt(job_id) -- plain text documentary narration
-          following the beat structure in prompts/narration.txt (Hook,
-          Context, Story, Unexpected discovery, Explanation, Significance,
-          Conclusion), written as flowing narration rather than labeled
-          sections.
-
-This is a plain-text generation call (qwen.generate, not generate_json) --
-narration is prose, not structured data.
-"""
-
-from __future__ import annotations
 import json
-import os
-from .utils import now_iso
+from .utils import write_text_atomic,write_json_atomic
 
-_PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts")
-
-
-def _load_template(name: str) -> str:
-    with open(os.path.join(_PROMPTS_DIR, name), "r", encoding="utf-8") as f:
-        return f.read()
-
-
-def build_prompt(research: dict, config) -> str:
-    template = _load_template("narration.txt")
-    return template.format(
-        target_minutes=config.target_video_minutes,
-        research_json=json.dumps(research, indent=2),
-    )
-
-
-def run(paths, job_id: str, title: str, research: dict, config, qwen=None) -> str:
-    out = paths.narration_txt(job_id)
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-
-    if qwen is None:
-        text = (
-            f"[NO MODEL LOADED] Narration not generated for '{title}'.\n"
-            f"generated_at: {now_iso()}\n"
-        )
-        with open(out, "w", encoding="utf-8") as f:
-            f.write(text)
-        return text
-
-    prompt = build_prompt(research, config)
-    try:
-        text = qwen.generate(prompt, max_new_tokens=2500, temperature=0.8)
-    except Exception as e:
-        raise RuntimeError(f"Narration generation failed for '{title}': {e}") from e
-
-    text = text.strip()
-    if not text:
-        raise RuntimeError(f"Narration generation returned empty text for '{title}'")
-
-    with open(out, "w", encoding="utf-8") as f:
-        f.write(text)
+def run(paths,job_id,topic,verified,config,qwen):
+    research=verified.get('research',verified)
+    prompt=f'''Write a fast-paced ~90-second vertical documentary narration about {topic.title}. Target {config.narration_words_min}-{config.narration_words_max} spoken words and {config.min_video_seconds}-{config.max_video_seconds} seconds. Start with a question, surprising detail, contradiction, or unresolved puzzle that makes viewers stop. Then answer it through the end. Beat flow: hook, question, context, discovery, explanation, unexpected detail, significance, conclusion. Be concise. Never present mythology, oral tradition, scholarly interpretation or uncertainty as established fact. Avoid colonization-centered framing. End naturally so a blank source card can follow. Research: {json.dumps(research,ensure_ascii=False)[:15000]}'''
+    text=qwen.generate(prompt,max_new_tokens=1800,temperature=.75).strip()
+    words=len(text.split())
+    if not config.narration_words_min<=words<=config.narration_words_max:
+        text=qwen.generate(prompt+f'\nRewrite the draft to fit {config.narration_words_min}-{config.narration_words_max} words. Previous draft was {words} words.',max_new_tokens=1800,temperature=.65).strip()
+    write_text_atomic(paths.narration(job_id),text)
+    write_json_atomic(paths.script(job_id),{'word_count':len(text.split()),'target_seconds':config.target_video_seconds,'format':'fast-paced vertical documentary','hook':text.splitlines()[0] if text.splitlines() else ''})
     return text

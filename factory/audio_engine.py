@@ -1,102 +1,21 @@
-"""Real audio-generation implementation.
+import os,subprocess
+from .utils import write_json_atomic
 
-Contract:
-  input:  scenes list (each with its own "narration" text) + a loaded
-          Piper voice
-  output: paths.audio_dir(job_id)/scene_{NNN}.wav -- one file per scene, so
-          video_engine.py can match each image's on-screen duration to its
-          own narration clip length instead of one long audio track.
-
-Same per-file skip + on_progress(completed_count) checkpoint pattern as
-image_engine.py.
-"""
-
-from __future__ import annotations
-import os
-import wave
-import struct
-
-
-def load_piper_voice(model_path: str = None, device: str = "cuda"):
-    """Call once in Colab Cell 4, e.g.:
-        from factory.audio_engine import load_piper_voice
-        models["piper"] = load_piper_voice("/content/en_US-lessac-medium.onnx")
-    Piper voice models (.onnx + .onnx.json) are downloaded separately --
-    see https://github.com/rhasspy/piper/blob/master/VOICES.md for the
-    catalog.
-    """
+def load_piper_voice(model_path):
     from piper import PiperVoice
-    return PiperVoice.load(model_path, use_cuda=(device == "cuda"))
-
-
-def _write_silence_wav(path: str, seconds: float = 3.0, rate: int = 22050) -> None:
-    """Fallback used when no Piper voice is loaded, so downstream stages
-    (duration matching, FFmpeg assembly) still have a real WAV to read."""
-    n_frames = max(1, int(seconds * rate))
-    with wave.open(path, "w") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(rate)
-        w.writeframes(struct.pack("<" + "h" * n_frames, *([0] * n_frames)))
-
-
-def _synthesize(voice, text: str, path: str) -> None:
-    """Explicitly configures the output WAV file's parameters before
-    calling voice.synthesize() -- newer piper-tts releases don't always
-    set these internally the way older ones did, which produced a bare
-    Python `wave` module error ("# channels not specified") rather than a
-    message that pointed at the actual cause. Setting them here first is
-    safe even if the library also sets them internally: Python's wave
-    module allows re-setting header parameters as long as no audio data
-    has been written yet."""
-    import wave as wave_mod
-
-    sample_rate = 22050
-    try:
-        sample_rate = voice.config.sample_rate
-    except AttributeError:
-        pass  # fall back to the default above rather than fail on this alone
-
-    with wave_mod.open(path, "wb") as wav_file:
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(sample_rate)
-        voice.synthesize(text, wav_file)
-
-
-def run(paths, job_id: str, scenes: list, piper=None, on_progress=None) -> list:
-    out_dir = paths.audio_dir(job_id)
-    os.makedirs(out_dir, exist_ok=True)
-
-    written = []
-    for scene in scenes:
-        fname = os.path.join(out_dir, f"scene_{scene['scene_id']:03d}.wav")
-        if os.path.exists(fname):
-            written.append(fname)
-            if on_progress:
-                on_progress(len(written))
-            continue
-
-        text = (scene.get("narration") or "").strip()
-        if piper is None or not text:
-            _write_silence_wav(fname, seconds=scene.get("duration", 8))
-        else:
-            try:
-                _synthesize(piper, text, fname)
-            except Exception as e:
-                raise RuntimeError(
-                    f"Audio generation failed for {job_id} scene {scene['scene_id']}: {e}"
-                ) from e
-
-        written.append(fname)
-        if on_progress:
-            on_progress(len(written))
-
-    return written
-
-
-def wav_duration_seconds(path: str) -> float:
-    """Used by video_engine.py to size each scene's clip to its actual
-    narration length rather than the (approximate) planned duration."""
-    with wave.open(path, "rb") as w:
-        return w.getnframes() / float(w.getframerate())
+    return PiperVoice.load(model_path,use_cuda=True)
+def synthesize(voice,text,out):
+    import wave
+    with wave.open(out,'wb') as f: voice.synthesize(text,f)
+def run(paths,job_id,scenes,voice,config):
+    out=paths.audio_dir(job_id); os.makedirs(out,exist_ok=True); narr=[]
+    for s in scenes:
+        p=os.path.join(out,f"scene_{int(s['scene_id']):03d}.wav")
+        if not os.path.exists(p): synthesize(voice,s['narration'],p)
+        narr.append(p)
+    concat=os.path.join(out,'narration_concat.txt'); final=os.path.join(out,'final_mix.wav')
+    if not os.path.exists(final):
+        with open(concat,'w',encoding='utf8') as f:
+            for p in narr: f.write("file '"+p.replace("'","'\\''")+"'\n")
+        subprocess.run(['ffmpeg','-y','-f','concat','-safe','0','-i',concat,'-c','copy',final],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    write_json_atomic(paths.state(job_id,'audio'),{'status':'complete','scene_count':len(narr)}); return final
