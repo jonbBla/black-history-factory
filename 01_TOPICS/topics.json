@@ -1,1 +1,5 @@
-[]
+[
+  {"id": "T000001", "title": "Iron Production Among the Haya", "category": "metallurgy", "region": "East Africa", "period": "precolonial", "description": "The Haya of northwestern Tanzania achieved furnace temperatures rivaling early European blast furnaces roughly 1,500-2,000 years earlier, using preheated-air forced-draft furnaces.", "aliases": [], "used": false},
+  {"id": "T000002", "title": "The Stone Construction Techniques of Great Zimbabwe", "category": "architecture", "region": "Southern Africa", "period": "13th-15th century", "description": "How Great Zimbabwe's builders achieved structurally sound mortarless dry-stone walls at scale, and what the coursing/selection of granite blocks reveals about their engineering knowledge.", "aliases": ["Great Zimbabwe Walls"], "used": false},
+  {"id": "T000003", "title": "The Water Engineering of the Kingdom of Kush", "category": "water engineering", "region": "North Africa", "period": "ancient", "description": "Kushite hafirs (large artificial reservoirs) and irrigation systems that sustained cities in a semi-arid environment.", "aliases": ["Hidden Engineering of Kush"], "used": false}
+]
