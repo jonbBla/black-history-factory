@@ -117,3 +117,18 @@ Simply reconnect/re-run that notebook. Existing files are checked before work st
 ## GitHub dashboard
 
 `dashboard/` is a static status UI. Keep private Drive paths and tokens out of the public repository. The current ZIP leaves GitHub publishing intentionally non-destructive: you can connect your existing repository later and push only public status JSON. Public MP4 playback/download requires public storage for the video itself; a private Drive path cannot be used directly by GitHub Pages.
+
+
+## v2.1 compatibility fixes
+
+The supplied v2 ZIP had several cross-file API mismatches that could stop Cell 2 before Qwen loaded:
+- `research_engine.py` now exports `RESEARCH_SCHEMA_KEYS` and `VALID_CLASSIFICATIONS`.
+- `DrivePaths` now provides `research_raw()` and `research_verified()` aliases expected by `fact_checker.py`.
+- `QwenClient` is loaded through its actual `QwenClient.load(...)` API.
+- `script_engine.py` now has the missing `write_text_atomic()` utility.
+- The four Colab notebooks install their processor-specific dependencies.
+- SDXL-Lightning uses the appropriate Euler trailing scheduler.
+- The visual bible accepts the newer structured `art_style` configuration.
+- Drive folder names are consistent with the processor code: `04_AUDIO_LIBRARY`, `05_OUTPUT`, `06_STATUS`, `07_LOGS`.
+
+For the first test, `prepared_job_target` is set to 1. Change it to 40 only after one complete video is approved.
