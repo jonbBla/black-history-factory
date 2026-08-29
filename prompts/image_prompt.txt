@@ -1,8 +1,1 @@
-Write a highly detailed image generation prompt for the scene below,
-incorporating the shared visual bible so this image stays visually
-consistent with the rest of the documentary.
-
-Visual bible: {visual_bible_json}
-Scene: {scene_json}
-
-Return a single detailed prompt string, no commentary.
+Subject first, then period/region grounding, then the locked cinematic art direction and lighting. Preserve historically supported architecture, clothing, tools, materials, people and environment. Make the shot visually spectacular through composition, scale, depth, lighting and atmosphere—not invented history.
