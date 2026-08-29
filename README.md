@@ -1,214 +1,119 @@
-# Black History Factory
+# Black History Factory v2
 
-A Google Colab-based automated documentary generator: picks an unusual,
-non-repeating topic in Black/African history and culture, researches it,
-writes a narration, breaks it into scenes, generates images and narration
-audio, and renders an MP4 -- checkpointed so it survives Colab disconnects,
-with a GitHub Pages dashboard to watch progress from your phone.
+Four independent Google Colab processors for fast-paced ~90-second vertical historical/mythological shorts. **The self/host-video feature has been removed.** Every finished video ends with a blank background source card.
 
-## Current state
+## What changed from the original ZIP
 
-Every pipeline stage is a real implementation, not a stub:
+- Split the monolithic Colab into four independent notebooks.
+- Replaced the old single-job pipeline with Drive job manifests/states.
+- Qwen prepares up to 40 jobs from your existing Drive topic list.
+- SDXL-Lightning only creates missing scene images.
+- Audio is a separate processor; narration is generated with Piper and optional music/ambience/SFX are supplied from Drive libraries.
+- Video assembly is a separate processor.
+- Default format is 80–100 seconds, 175–220 spoken words, 1080x1920, 30 fps.
+- Fast pacing uses many short scenes, hard cuts, zoom/pan motion and limited crossfades.
+- Historical accuracy is separated from cinematic art direction.
+- The final source card is blank/black and lists the research sources; if no specific source exists, it says so rather than inventing one.
+- No host/self video code remains.
 
-- **Topics** (`factory/topic_engine.py`) -- database, dedupe, selection.
-- **Research** (`factory/research_engine.py`, `fact_checker.py`) --
-  Qwen-generated research with fact classification
-  (established_fact/archaeological_evidence/scholarly_interpretation/
-  oral_tradition/mythology/uncertain). Any claim missing or with an invalid
-  classification defaults to `uncertain` rather than being treated as fact.
-- **Writing** (`factory/script_engine.py`, `visual_bible.py`,
-  `scene_engine.py`) -- narration, a locked series-wide art style (see
-  `prompts/ART_STYLE.md`), and scene breakdown with a carefully
-  budgeted image-generation prompt (see scene_engine.py's module
-  docstring -- this took several rounds to get right, see Troubleshooting).
-- **Media** (`factory/image_engine.py`, `audio_engine.py`,
-  `video_engine.py`, `thumbnail_engine.py`) -- FLUX or SDXL-Lightning for
-  images (pick one in Cell 4), Piper TTS for narration audio, real FFmpeg
-  assembly (Ken Burns pan/zoom, crossfades, subtitles, music mixing), PIL
-  thumbnail compositing.
-- **Job management** (`factory/main.py`, `checkpoint.py`, `status.py`) --
-  full checkpoint/resume, per-completed-job manifest archiving, Qwen
-  GPU-memory offload/restore around the image-generation stage.
-- **Dashboard** (`dashboard/`) -- GitHub Pages status page with
-  stalled-session detection (flags a job as "possibly disconnected" if no
-  status update in 3+ minutes while still claiming to run).
-- **Local self-test** (`tests/self_test.py`) -- runs the whole pipeline
-  against a mock model in ~10 seconds, no GPU needed. Run this after any
-  code change before spending real Colab GPU time.
+## Colab notebooks
 
-## Repository layout
+1. `colab/01_Qwen_Processor.ipynb`
+   - Reads unused topics from `01_TOPICS/topics.json`.
+   - Creates a job folder and performs research + fact check + visual bible + narration + scene plan.
+   - Stops when 40 Qwen-ready jobs exist by default.
 
-```
-black-history-factory/
-├── README.md
-├── requirements.txt
-├── .gitignore
-├── colab/Black_History_Factory.ipynb
-├── factory/            # all pipeline code -- see docstrings for contracts
-├── prompts/             # editable prompt templates + ART_STYLE.md
-├── tests/self_test.py   # local no-GPU integration test
-├── dashboard/            # GitHub Pages status page
-├── 00_CONFIG/config.json # seed config -- copy to Drive once
-└── 01_TOPICS/topics.json # small seed topic list -- see note below
-```
+2. `colab/02_Image_Processor.ipynb`
+   - Loads `ByteDance/SDXL-Lightning`.
+   - Processes only `QWEN_READY`/`IMAGES_PARTIAL` jobs.
+   - Skips any `scene_###.png` that already exists, so a Colab reset does not regenerate completed images.
 
-**Note on topics.json**: the seed file in this repo is intentionally small.
-The real, full topic database (hundreds of curated topics) lives on your
-Google Drive at `BLACK_HISTORY_FACTORY/01_TOPICS/topics.json` and is
-managed separately from this repo -- `git pull` in Cell 2 never touches
-your Drive, so your real topic list is safe across code updates.
+3. `colab/03_Audio_Processor.ipynb`
+   - Uses Piper for scene narration.
+   - Saves one WAV per scene and a concatenated narration track.
+   - Put royalty-free audio into the Drive library folders for later mixing.
 
-## Install -- step by step
+4. `colab/04_Video_Processor.ipynb`
+   - Converts each still into a moving clip using zoom/pan.
+   - Uses the actual narration WAV duration to time each visual.
+   - Adds subtitles and optional background music.
+   - Appends a 4.5-second blank source card with silence.
+   - Copies the final MP4 to `05_OUTPUT/completed/`.
 
-### Model size tiers
+## Google Drive layout
 
-| Tier | Text | Image | Combined storage/VRAM | Quality |
-|---|---|---|---|---|
-| **Lightest** (default) | Qwen 1.5B, no quantization | SD-Turbo (`load_sd_turbo()`) | ~6GB | Weakest narration; visible quality loss at portrait resolution (SD-Turbo's native res is 512x512) |
-| Balanced | Qwen 3B | SDXL-Lightning (`load_sdxl_lightning()`) | ~13GB | Good middle ground |
-| Heaviest | Qwen 3B/7B, 4-bit | FLUX (`load_flux()`, 4-bit) | ~10-20GB+ | Best prompt adherence/photorealism, needs the most headroom and quantization to fit a T4 at all |
-
-Pick the tier matching your actual constraint (a strict combined ≤10GB
-across RAM/VRAM/storage needs the Lightest tier) by editing the model
-names/loader calls in Cell 4 -- both alternatives are already there as
-commented-out lines.
-
-### 1. Create the GitHub repository, push this code
-
-Create a repo, push everything in this folder to it.
-
-### 2. Create a GitHub token for the dashboard (optional)
-
-GitHub → Settings → Developer settings → Personal access tokens →
-Fine-grained token → Contents: read/write on this one repo. Add it to
-Colab's Secrets panel (key icon in the sidebar) as `GH_TOKEN`. Also set
-`github_repo` in `config.json` to your actual `username/repo-name` --
-it ships blank/placeholder by default, and the dashboard silently does
-nothing if it's not set correctly.
-
-### 3. Enable GitHub Pages
-
-Repo Settings → Pages → Deploy from a branch → set the folder to
-`/dashboard`. Dashboard will be live at
-`https://<you>.github.io/black-history-factory/`.
-
-### 4. Seed your Google Drive
-
-Run Cell 1 once to create the folder tree. Then upload your real
-`topics.json` to `BLACK_HISTORY_FACTORY/01_TOPICS/topics.json` on Drive
-(the repo's seed is just a small placeholder -- see the layout note
-above). `config.json` self-heals: `Config.load()` writes it fresh if
-missing, and fills in any keys an older file is missing, so you rarely
-need to touch it directly.
-
-### 5. Open the notebook in Colab, run Cells 1-7 in order
-
-Cell 4 loads models. Recommended default (see Cell 4's comments): **Qwen
-2.5-3B-Instruct + SDXL-Lightning** together total ~13GB, comfortably
-fitting a free-tier T4 (14.56GB) with real margin -- see Troubleshooting
-below for why this is the recommendation, not just a suggestion.
-
-### 6. Verify resumability
-
-Interrupt execution mid-run (Runtime → Interrupt execution), then re-run
-Cells 1, 3, 5, 6 -- Cell 5 should say "Resuming in-progress job" and pick
-up from wherever it stopped.
-
-### 7. Run the local self-test before any future code change
-
-```bash
-python3 tests/self_test.py
+```text
+BLACK_HISTORY_FACTORY/
+├── 00_CONFIG/
+│   └── config.json
+├── 01_TOPICS/
+│   ├── topics.json
+│   ├── used_topics.json
+│   └── rejected_topics.json
+├── 02_JOBS/
+│   └── BH000001/
+│       ├── job.json
+│       ├── state/
+│       ├── 01_research/
+│       ├── 02_script/
+│       ├── 03_scenes/
+│       ├── 04_images/
+│       ├── 05_audio/
+│       ├── 06_video/
+│       └── 07_thumbnail.png
+├── 04_AUDIO_LIBRARY/
+│   ├── music/
+│   ├── ambience/
+│   └── sfx/
+├── 05_OUTPUT/
+│   ├── completed/
+│   └── failed/
+├── 06_STATUS/
+└── 07_LOGS/
 ```
 
-No GPU needed, runs in ~10 seconds, covers 8 scenarios including
-checkpoint/resume, failure handling, the locked art style never being
-overridden, and Qwen's GPU offload firing at the right points.
+The ZIP includes starter `00_CONFIG/config.json` and empty topic logs. **Replace `01_TOPICS/topics.json` with your existing topic list** or copy your existing file into that location. Do not delete it if it already contains your topics.
 
-## Troubleshooting
+## Topic format
 
-This section reflects real problems hit while building this project --
-each one is a genuine lesson, not hypothetical.
-
-**`credential propagation was unsuccessful` on `drive.mount()`**
-A Colab-side auth handshake failure. Try `force_remount=True`; if that
-fails, disconnect/delete the runtime and reconnect; check for an ad
-blocker or third-party-cookie blocking on `colab.research.google.com`.
-
-**`GatedRepoError` / `401 Unauthorized` loading FLUX**
-FLUX.1-schnell is gated -- accept its license on its Hugging Face page,
-create a token, add it as a Colab secret named `HF_TOKEN`, **restart the
-runtime** (secrets don't retroactively apply mid-session).
-
-**`OutOfMemoryError` loading or running FLUX/Qwen**
-The root cause, worked out the hard way over several rounds: FLUX's
-12B-parameter transformer alone is ~24GB in bf16 -- more than a T4's
-14.56GB by itself, before Qwen is even considered. `enable_model_cpu_offload()`
-alone can't fix this (it manages *when* things move between CPU/GPU, not
-the size of the thing itself). The real fix was 4-bit quantizing FLUX's
-transformer + T5 encoder (see `load_flux()`), or better, switching to
-**SDXL-Lightning** (~7GB total, fits without any quantization tricks) --
-which is now the recommended default. Separately, Qwen at full precision
-(~14-16GB) also doesn't leave room for anything else, which is why
-**Qwen 2.5-3B** (not 7B) is the other half of the recommended default --
-even at full precision it's only ~6GB, so the combination fits with real
-margin instead of depending on quantization working perfectly.
-
-If you still hit OOM with the recommended defaults: restart the runtime
-first (a previously-OOM'd session can leave the GPU in a bad state), then
-check Cell 4's printed "Qwen GPU memory after load" line -- under 8GB
-means quantization/sizing is working as expected.
-
-**A memory bug specific to `load_sdxl_lightning()`**
-An earlier version of this function loaded the base SDXL pipeline fully
-onto the GPU, THEN loaded the Lightning UNet checkpoint directly onto the
-GPU as a second copy before swapping it in -- briefly holding two UNets in
-VRAM at once. Fixed by loading the Lightning weights to CPU first and
-letting `load_state_dict()` copy them into the already-allocated GPU
-parameters in place.
-
-**Image prompts silently losing content / every image looking the same**
-`scene_engine.py`'s `_compose_image_prompt()` went through several
-corrections: (1) it was originally sized for FLUX's 256-token T5 budget,
-which badly overshoots SDXL-Lightning's CLIP-only 77-token limit now that
-SDXL is the default; (2) the naive fix used a generic ~1.3 tokens/word
-estimate, but this project's actual vocabulary (specialized/foreign terms)
-empirically tokenizes at ~2.07 tokens/word -- nearly double; (3) with the
-old prompt ordering, EVERY scene-specific detail (location, characters,
-objects) was what got silently truncated away, while only the shared style
-boilerplate survived, meaning every image in a video looked nearly
-identical. Fixed by reprioritizing scene-specific content first, dropping
-the least-informative fields entirely, and adding a hard word-count
-safety cap verified against real observed tokenization data. Also removed
-`"camera movement: X"` from the image prompt entirely -- it was never
-consumed by the image model; `video_engine.py` reads `scene["camera"]`
-directly for its own zoompan filter after the still image is generated.
-
-**`KeyError: slice(None, 1500, None)` during visual_bible generation**
-A genuinely confusing error message: Qwen occasionally returns `overview`
-as a nested object instead of plain text, and `overview[:1500]` on a dict
-raises this (Python 3.12 made `slice` objects hashable, so a dict slice
-now raises `KeyError` instead of the clearer old `TypeError`). Fixed with
-explicit type coercion in `research_engine.py`'s `_normalize()` and a
-defensive check in `visual_bible.py`.
-
-**Job fails with "No unused topics remain" even though you uploaded topics.json**
-Almost always either: (1) the file wasn't uploaded to the exact path
-`BLACK_HISTORY_FACTORY/01_TOPICS/topics.json`, (2) Google Drive kept a
-duplicate-named file and the mount is resolving to a stale one, or (3)
-every topic really is already marked `used: true` from an earlier run.
-Diagnose directly in a Colab cell:
-```python
-from factory.utils import read_json
-topics = read_json(paths.topics_json, default=[])
-print(len(topics), sum(1 for t in topics if t.get("used")))
+```json
+[
+  {
+    "id": "T0001",
+    "title": "Example topic",
+    "category": "technology",
+    "region": "East Africa",
+    "period": "18th century",
+    "description": "Specific surprising angle to investigate",
+    "aliases": []
+  }
+]
 ```
 
-**"Your disk is almost full"**
-Model weights are cached on the Colab runtime's local disk, separate from
-Drive. Qwen 3B (~6GB) + SDXL-Lightning (~7GB) is dramatically lighter than
-the original Qwen 7B + FLUX combination (~49GB) -- another reason the
-recommended default combination helps beyond just VRAM.
+## Audio library
 
-## Requirements
+Use only audio you are allowed to use. Suggested naming:
 
-See `requirements.txt`.
+```text
+04_AUDIO_LIBRARY/music/ancient-documentary.mp3
+04_AUDIO_LIBRARY/ambience/fire-furnace.wav
+04_AUDIO_LIBRARY/sfx/metal-strike.wav
+```
+
+The current v2 automatically uses the music library for global background music. The ambience/SFX folders are reserved for the next audio-mixing expansion, so the architecture already has a place for them without coupling them to Qwen or video rendering.
+
+## Run order
+
+Start Qwen first. Once it creates jobs, start Image, Audio and Video. You may run all four concurrently. Each processor only touches the files belonging to its stage.
+
+### If a Colab times out
+
+Simply reconnect/re-run that notebook. Existing files are checked before work starts. For example, if Image Processor generated 18 of 30 images before disconnecting, the next run skips those 18 and continues with the remaining 12.
+
+## Visual direction
+
+`00_CONFIG/config.json` contains the locked `art_style`. It is deliberately separated from historical facts. Qwen's visual bible determines what architecture, clothing, materials, people and environment are appropriate; the art style determines cinematic presentation. "Epic" therefore means lighting, scale, atmosphere and composition—not fabricated historical details.
+
+## GitHub dashboard
+
+`dashboard/` is a static status UI. Keep private Drive paths and tokens out of the public repository. The current ZIP leaves GitHub publishing intentionally non-destructive: you can connect your existing repository later and push only public status JSON. Public MP4 playback/download requires public storage for the video itself; a private Drive path cannot be used directly by GitHub Pages.
