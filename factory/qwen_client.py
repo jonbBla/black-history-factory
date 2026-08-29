@@ -22,6 +22,7 @@ DEFAULT_MODEL = "Qwen/Qwen2.5-3B-Instruct"
 
 class QwenClient:
     def __init__(self, model=None, tokenizer=None, device="cuda"):
+        # Kept intentionally simple: use QwenClient.load(...) for model loading.
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
@@ -90,13 +91,13 @@ class QwenClient:
             quantization_config = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_compute_dtype=torch.float16,
                 bnb_4bit_use_double_quant=True,
             )
 
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
+            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
             device_map=device,
             quantization_config=quantization_config,
         )

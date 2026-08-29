@@ -49,3 +49,17 @@ def next_job_id(used_ids: list) -> str:
         if m:
             max_n = max(max_n, int(m.group(1)))
     return f"BH{max_n + 1:06d}"
+
+
+def write_text_atomic(path: str, text: str) -> None:
+    """Write text atomically so a Colab interruption cannot leave a partial file."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    dir_ = os.path.dirname(path)
+    fd, tmp_path = tempfile.mkstemp(dir=dir_, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)

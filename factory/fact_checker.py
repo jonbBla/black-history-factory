@@ -56,6 +56,11 @@ def run(paths, job_id: str, qwen=None) -> dict:
         raise RuntimeError(f"Fact-check generation failed for job {job_id}: {e}") from e
 
     verified = _enforce_classifications(result if isinstance(result, dict) else dict(raw))
+    # Preserve the original research package if the model omitted fields.
+    for key, value in raw.items():
+        if key.startswith("_"):
+            continue
+        verified.setdefault(key, value)
     verified["_verified_at"] = now_iso()
     verified["_stub"] = False
     write_json_atomic(paths.research_verified(job_id), verified)

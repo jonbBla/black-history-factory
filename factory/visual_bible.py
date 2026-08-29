@@ -59,7 +59,9 @@ def build_prompt(topic, research: dict, art_style: str) -> str:
 
 def run(topic, research: dict, config=None, qwen=None) -> dict:
     art_style = getattr(config, "art_style", None) if config else None
-    art_style = art_style or _DEFAULT_STYLE
+    if isinstance(art_style, dict):
+        art_style = art_style.get("description") or art_style.get("primary")
+    art_style = str(art_style or _DEFAULT_STYLE)
 
     base = {
         "period": getattr(topic, "period", "") or "unspecified",
