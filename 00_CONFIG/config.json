@@ -1,0 +1,65 @@
+{
+  "project_name": "Black History Factory",
+  "language": "English",
+
+  "prepared_job_target": 1,
+
+  "target_video_seconds": 90,
+  "min_video_seconds": 80,
+  "max_video_seconds": 100,
+
+  "narration_words_min": 175,
+  "narration_words_max": 220,
+
+  "scene_count_min": 20,
+  "scene_count_max": 40,
+  "scenes_per_minute": 20,
+
+  "image_model": "sdxl-lightning",
+  "image_width": 768,
+  "image_height": 1344,
+  "image_steps": 4,
+  "image_guidance_scale": 0.0,
+
+  "video_width": 1080,
+  "video_height": 1920,
+  "video_fps": 30,
+
+  "enable_subtitles": true,
+  "enable_music": true,
+  "enable_ambience": true,
+  "enable_sfx": true,
+
+  "music_volume": 0.10,
+  "ambience_volume": 0.08,
+  "sfx_volume": 0.15,
+
+  "source_card_enabled": true,
+  "source_card_seconds": 4.5,
+  "source_card_background": "black",
+
+  "image_mode": "generate_missing_only",
+
+  "historical_accuracy": "very_high",
+
+  "art_style": {
+    "primary": "cinematic 3D historical reconstruction",
+    "description": "epic cinematic historical reconstruction, physically plausible materials, period-authentic details, dramatic natural lighting, volumetric atmosphere, strong depth, detailed surfaces, cinematic composition, realistic proportions, highly detailed environments, realistic textures, dramatic scale, not flat cartoon",
+    "default_renderer_feel": "high-end game cinematic, Unreal Engine style",
+    "allow_style_adaptation": true
+  },
+
+  "visual_rules": {
+    "prioritize_historical_accuracy": true,
+    "avoid_anachronisms": true,
+    "avoid_generic_african_architecture": true,
+    "avoid_modern_objects": true,
+    "avoid_unjustified_costumes": true,
+    "use_region_specific_architecture": true,
+    "use_period_specific_materials": true,
+    "use_evidence_based_visual_details": true
+  },
+
+  "github_repo": "",
+  "github_dashboard_path": "dashboard/data"
+}
