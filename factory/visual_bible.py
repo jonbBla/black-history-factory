@@ -57,7 +57,7 @@ def build_prompt(topic, research: dict, art_style: str) -> str:
     )
 
 
-def run(topic, research: dict, config=None, qwen=None) -> dict:
+def run(paths, job_id, topic, research: dict, config=None, qwen=None) -> dict:
     art_style = getattr(config, "art_style", None) if config else None
     if isinstance(art_style, dict):
         art_style = art_style.get("description") or art_style.get("primary")

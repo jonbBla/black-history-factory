@@ -97,7 +97,7 @@ class QwenClient:
 
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+            dtype=torch.float16 if device == "cuda" else torch.float32,
             device_map=device,
             quantization_config=quantization_config,
         )
