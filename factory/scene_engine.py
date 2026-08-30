@@ -1,194 +1,101 @@
 import json
-import re
 from .utils import write_json_atomic
 
-CAMERAS = ["zoom_in", "zoom_out", "pan_left", "pan_right", "slow_push", "slow_pull"]
-TRANSITIONS = ["hard_cut", "crossfade"]
+CAMERAS = ["zoom_in","zoom_out","pan_left","pan_right","slow_push","slow_pull"]
 
-def _norm(text):
-    """Normalize text for duplicate detection."""
-    return re.sub(r"\W+", " ", str(text).lower()).strip()
+def normalize_text(text):
+    return " ".join(str(text).lower().split())
 
-def _fingerprint(scene):
-    return (
-        _norm(scene.get("narration", "")),
-        _norm(scene.get("visual_focus", ""))
-    )
+def duplicate_narration(scenes):
+    seen = set()
+    for scene in scenes:
+        narration = normalize_text(scene.get("narration", ""))
+        if not narration or narration in seen:
+            return True
+        seen.add(narration)
+    return False
 
-def _duplicate_report(scenes):
-    seen = {}
-    duplicates = []
-    for i, s in enumerate(scenes, 1):
-        fp = _fingerprint(s)
-        if not fp[0] and not fp[1]:
-            duplicates.append(i)
-            continue
-        if fp in seen:
-            duplicates.append(i)
-        else:
-            seen[fp] = i
+def duplicate_visuals(scenes):
+    seen = set()
+    for scene in scenes:
+        focus = normalize_text(scene.get("visual_focus", ""))
+        if not focus or focus in seen:
+            return True
+        seen.add(focus)
+    return False
 
-    # Also catch exact repeated narration even when the visual changes.
-    narration_seen = {}
-    repeated_narration = []
-    for i, s in enumerate(scenes, 1):
-        n = _norm(s.get("narration", ""))
-        if not n:
-            continue
-        if n in narration_seen:
-            repeated_narration.append(i)
-        else:
-            narration_seen[n] = i
-    return duplicates, repeated_narration
+def validate_scenes(scenes, config):
+    if not isinstance(scenes, list):
+        return False, "Scenes is not a list"
+    if not (config.scene_count_min <= len(scenes) <= config.scene_count_max):
+        return False, "Invalid scene count"
+    if duplicate_narration(scenes):
+        return False, "Repeated narration detected"
+    if duplicate_visuals(scenes):
+        return False, "Repeated visual focus detected"
+    for scene in scenes:
+        for key in ["narration","visual_focus","camera","transition","historical_role"]:
+            if not str(scene.get(key, "")).strip():
+                return False, f"Missing {key}"
+    return True, "OK"
 
-def _clean_scenes(scenes, min_count, max_count):
-    """Remove source-card scenes and obvious duplicates before validation."""
-    cleaned = []
-    seen_narration = set()
-    seen_focus = set()
+def build_prompt(narration, vb, config):
+    return f"""You are the visual scene planner for a historical documentary.
 
-    for s in scenes:
-        if not isinstance(s, dict):
-            continue
+Create {config.scene_count_min}-{config.scene_count_max} UNIQUE visual beats.
 
-        narration = str(s.get("narration", "")).strip()
-        focus = str(s.get("visual_focus", "historical scene")).strip()
+The narration below is ONE continuous timeline. EVERY PART must be represented EXACTLY ONCE.
 
-        # Source cards are created by the video processor, not the scene planner.
-        low = (narration + " " + focus).lower()
-        if "source card" in low or "primary source:" in low or "sources:" in low:
-            continue
+DO NOT:
+- repeat the opening hook later
+- repeat an earlier narration segment
+- repeat the same visual
+- repeat the same historical event
+- restart the story
+- create a second summary or conclusion
+- create a source card, citations, or text cards
 
-        nkey = _norm(narration)
-        fkey = _norm(focus)
-
-        # Exact repeated narration is never allowed.
-        if nkey and nkey in seen_narration:
-            continue
-
-        # Exact repeated visual focus is also rejected.
-        if fkey and fkey in seen_focus:
-            continue
-
-        seen_narration.add(nkey)
-        seen_focus.add(fkey)
-
-        cleaned.append({
-            "scene_id": len(cleaned) + 1,
-            "narration": narration,
-            "visual_focus": focus,
-            "camera": s.get("camera", "slow_push") if s.get("camera") in CAMERAS else "slow_push",
-            "transition": s.get("transition", "hard_cut") if s.get("transition") in TRANSITIONS else "hard_cut",
-            "historical_role": str(s.get("historical_role", "")).strip()
-        })
-
-    return cleaned
-
-def _planner_prompt(narration, vb, config):
-    return f"""
-You are the scene planner for a fast-paced 90-second historical documentary.
-
-Break the narration below into {config.scene_count_min}-{config.scene_count_max} UNIQUE visual scenes.
-
-CRITICAL RULES:
-1. The scenes must cover the narration ONCE from beginning to end, in order.
-2. NEVER repeat, copy, paraphrase, or restate a previous scene's narration.
-3. Every narration field must represent a DIFFERENT consecutive segment of the supplied narration.
-4. Do NOT create an opening hook twice.
-5. Do NOT repeat the conclusion.
-6. Do NOT create a "recap", "reiterate", or "reinforce" scene.
-7. Do NOT create a source-card scene. The video processor adds the source card separately.
-8. Do NOT invent facts, people, locations, objects, architecture, dates, clothing, or technology not supported by the narration/research/visual bible.
-9. Vary visual compositions. Do not reuse the same visual focus for multiple scenes unless the narration explicitly requires the same subject and the visual action is substantially different.
-10. Prefer 2-4 second visual beats and hard cuts. Use crossfade only for meaningful changes of time, place, or mood.
-11. A scene's narration should be the actual portion of the supplied narration that is spoken over that scene, not newly written narration.
-12. The FINAL scene must finish the supplied narration naturally. Do not restart the story.
+Each scene must advance the story. Normally use approximately 2-5 seconds per visual beat.
+Use varied visual types: environment, architecture, people, artifacts, tools, maps, landscape, reconstruction, close-up, activity, evidence, daily life.
+Do not invent unsupported historical details.
 
 Return ONLY:
-{{"scenes":[
-  {{
-    "scene_id": 1,
-    "narration": "...",
-    "visual_focus": "...",
-    "camera": "zoom_in|zoom_out|pan_left|pan_right|slow_push|slow_pull",
-    "transition": "hard_cut|crossfade",
-    "historical_role": "..."
-  }}
-]}}
+{{"scenes":[{{"scene_id":1,"narration":"...","visual_focus":"...","camera":"...","transition":"...","historical_role":"..."}}]}}
 
-Visual bible:
-{json.dumps(vb, ensure_ascii=False)}
+Allowed cameras: {CAMERAS}
 
-Full narration:
+NARRATION:
 {narration}
-"""
+
+VISUAL BIBLE:
+{json.dumps(vb, ensure_ascii=False)}"""
 
 def run(paths, job_id, narration, vb, config, qwen):
-    prompt = _planner_prompt(narration, vb, config)
-
-    # Try twice if the model repeats scenes. The second prompt explicitly
-    # reports the violation so Qwen can repair the complete scene plan.
-    scenes = None
-    last_report = None
-
+    prompt = build_prompt(narration, vb, config)
+    last_error = ""
     for attempt in range(3):
-        extra = ""
-        if last_report:
-            extra = f"""
-The previous scene plan FAILED validation.
-Repeated narration scene IDs: {last_report['repeated_narration']}.
-Duplicate scene IDs: {last_report['duplicates']}.
-Regenerate the ENTIRE scene list. Do not patch only those scenes.
+        current_prompt = prompt if attempt == 0 else prompt + f"""
+The previous scene plan FAILED validation because:
+{last_error}
+Regenerate the ENTIRE scene plan. Do not patch it. Every narration segment must appear exactly once.
 """
-        raw = qwen.generate_json(
-            prompt + extra,
-            max_new_tokens=max(5000, config.scene_count_max * 180)
-        )
-        candidate = raw.get("scenes", raw) if isinstance(raw, dict) else raw
-        if not isinstance(candidate, list):
-            last_report = {"duplicates": [], "repeated_narration": ["INVALID_OUTPUT"]}
-            continue
-
-        candidate = _clean_scenes(
-            candidate,
-            config.scene_count_min,
-            config.scene_count_max
-        )
-        dup, repeated = _duplicate_report(candidate)
-
-        if not dup and not repeated and len(candidate) >= config.scene_count_min:
-            scenes = candidate
-            break
-
-        last_report = {
-            "duplicates": dup,
-            "repeated_narration": repeated,
-            "count": len(candidate)
-        }
-
-    if scenes is None:
-        raise ValueError(
-            "Scene planner produced repeated/invalid scenes after 3 attempts: "
-            + json.dumps(last_report)
-        )
-
-    # Build image prompts only after the scene list passes validation.
-    out = []
-    for i, s in enumerate(scenes, 1):
-        focus = s["visual_focus"]
-        image_prompt = (
-            f"{focus}, {vb.get('period','')}, {vb.get('region','')}, "
-            f"{vb.get('style','')}, {vb.get('lighting','dramatic natural light')}"
-        )
-        out.append({
-            "scene_id": i,
-            "narration": s["narration"],
-            "visual_focus": focus,
-            "camera": s["camera"],
-            "transition": s["transition"],
-            "historical_role": s["historical_role"],
-            "image_prompt": image_prompt
-        })
-
-    write_json_atomic(paths.scenes(job_id), out)
-    return out
+        raw = qwen.generate_json(current_prompt, max_new_tokens=4500)
+        scenes = raw.get("scenes", raw) if isinstance(raw, dict) else raw
+        valid, error = validate_scenes(scenes, config)
+        if valid:
+            out = []
+            for i, scene in enumerate(scenes, 1):
+                focus = str(scene.get("visual_focus","historical scene")).strip()
+                out.append({
+                    "scene_id": i,
+                    "narration": str(scene.get("narration","")).strip(),
+                    "visual_focus": focus,
+                    "camera": scene.get("camera") if scene.get("camera") in CAMERAS else "slow_push",
+                    "transition": scene.get("transition","hard_cut"),
+                    "historical_role": scene.get("historical_role",""),
+                    "image_prompt": f"{focus}, {vb.get('period','')}, {vb.get('region','')}, {vb.get('style','')}, {vb.get('lighting','dramatic natural light')}"
+                })
+            write_json_atomic(paths.scenes(job_id), out)
+            return out
+        last_error = error
+    raise ValueError(f"Scene generation failed validation: {last_error}")
