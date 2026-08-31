@@ -191,8 +191,8 @@ VISUAL BIBLE:
 def run(
     paths, 
     job_id, 
-    topic, 
-    verified, 
+    narration, 
+    vb, 
     config, 
     qwen
 ):
