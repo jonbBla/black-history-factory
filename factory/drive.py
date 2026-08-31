@@ -9,10 +9,10 @@ SUBFOLDERS = [
     "04_AUDIO_LIBRARY/music",
     "04_AUDIO_LIBRARY/ambience",
     "04_AUDIO_LIBRARY/sfx",
-    "04_OUTPUT/completed",
-    "04_OUTPUT/failed",
-    "05_STATUS",
-    "06_LOGS",
+    "05_OUTPUT/completed",
+    "05_OUTPUT/failed",
+    "06_STATUS",
+    "07_LOGS",
 ]
 
 @dataclass
@@ -35,11 +35,11 @@ class DrivePaths:
     @property
     def rejected_topics_json(self): return self("01_TOPICS", "rejected_topics.json")
     @property
-    def status_current(self): return self("05_STATUS", "current.json")
+    def status_current(self): return self("06_STATUS", "current.json")
     @property
-    def status_history(self): return self("05_STATUS", "history.json")
+    def status_history(self): return self("06_STATUS", "history.json")
 
-    def job(self, j, *parts): return self("02_JOBS", j, *parts)
+    def job(self, j): return self("02_JOBS", j)
     def state(self, j, processor): return self("02_JOBS", j, "state", processor + ".json")
     def manifest(self, j): return self("02_JOBS", j, "job.json")
 
@@ -59,7 +59,7 @@ class DrivePaths:
     def video_render(self, j): return self("02_JOBS", j, "06_video", "rendering.mp4")
     def video_final(self, j): return self("02_JOBS", j, "06_video", "final.mp4")
     def thumbnail(self, j): return self("02_JOBS", j, "07_thumbnail.png")
-    def output_video(self, j): return self("04_OUTPUT", "completed", j + ".mp4")
+    def output_video(self, j): return self("05_OUTPUT", "completed", j + ".mp4")
 
 def mount_drive():
     try:

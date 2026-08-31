@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 
-DEFAULT_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
+DEFAULT_MODEL = "Qwen/Qwen2.5-3B-Instruct"
 # Recommendation for a free-tier T4 (14.56GB VRAM): Qwen 3B + SDXL-Lightning
 # together total ~13GB even at FULL precision, no quantization required --
 # real margin instead of a razor's edge. Qwen 7B needs 4-bit quantization
@@ -97,7 +97,7 @@ class QwenClient:
 
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            dtype=torch.float16 if device == "cuda" else torch.float32,
+            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
             device_map=device,
             quantization_config=quantization_config,
         )
