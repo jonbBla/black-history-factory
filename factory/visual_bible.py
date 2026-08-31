@@ -1,99 +1,328 @@
-"""Real visual-bible implementation.
+"""
+Visual bible generation.
 
-Contract:
-  input:  topic + verified research package + config (for the locked
-          series-wide art_style) + a QwenClient
-  output: a dict of visual rules shared by every scene's image prompt:
-    { period, region, architecture, clothing, materials, environment,
-      lighting, style, people }
+The visual bible establishes consistent visual rules for every scene
+within a documentary:
 
-`style` is ALWAYS taken from config.art_style, never from the model --
-the whole point of a visual bible is series-wide consistency, and the art
-style was a deliberate one-time decision (see config.py), not something to
-re-derive per topic. `lighting` may be specialized per topic but stays
-within the locked style's overall look. architecture/clothing/materials/
-environment/people are genuinely topic-specific and come from the model.
+- period
+- region
+- architecture
+- clothing
+- materials
+- environment
+- people
+- lighting
+- style
 
-`people` (skin tone/complexion and period-accurate physical features
-appropriate to the region) and `clothing` (specific garments/textiles, not
-generic terms) exist specifically so generated images accurately represent
-the region's actual population and dress rather than defaulting to
-whatever a weak-alignment image model's training bias favors -- see
-prompts/visual_bible.txt for exactly how Qwen is instructed to write these
-factually and respectfully, grounded in the region's real population.
-
-If Qwen's response is malformed or the call fails, this falls back to
-placeholders rather than failing the whole job.
+The series-wide art style always comes from config.art_style.
+Qwen may describe topic-specific visual details, but it cannot
+override the configured art style.
 """
 
 from __future__ import annotations
+
+import json
 import os
 
-_PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts")
+from .utils import write_json_atomic
 
-_DEFAULT_STYLE = (
-    "historical cinematic oil realism, painterly brushwork, warm "
-    "directional lighting, muted earth-tone palette"
+
+PROMPTS_DIR = os.path.join(
+    os.path.dirname(
+        os.path.dirname(
+            os.path.abspath(__file__)
+        )
+    ),
+    "prompts"
 )
-_DEFAULT_LIGHTING = "warm directional, late-afternoon or torchlight, strong chiaroscuro"
+
+
+DEFAULT_STYLE = (
+    "epic cinematic historical reconstruction, "
+    "physically plausible materials, "
+    "period-authentic details, "
+    "dramatic natural lighting, "
+    "volumetric atmosphere, "
+    "strong depth, "
+    "detailed surfaces, "
+    "cinematic composition, "
+    "realistic proportions"
+)
+
+
+DEFAULT_LIGHTING = (
+    "dramatic natural lighting, "
+    "volumetric atmosphere, "
+    "strong depth and realistic shadows"
+)
 
 
 def _load_template(name: str) -> str:
-    with open(os.path.join(_PROMPTS_DIR, name), "r", encoding="utf-8") as f:
+
+    path = os.path.join(
+        PROMPTS_DIR,
+        name
+    )
+
+    if not os.path.exists(path):
+        return ""
+
+    with open(
+        path,
+        "r",
+        encoding="utf-8"
+    ) as f:
         return f.read()
 
 
-def build_prompt(topic, research: dict, art_style: str) -> str:
-    template = _load_template("visual_bible.txt")
-    overview = (research or {}).get("overview", "") if isinstance(research, dict) else ""
-    if not isinstance(overview, str):
-        overview = str(overview)
-    return template.format(
-        topic_title=topic.title,
-        region=topic.region,
-        period=topic.period,
-        research_summary=overview[:1500],  # keep the prompt bounded
-        art_style=art_style,
+def build_prompt(
+    topic,
+    research: dict,
+    art_style: str
+) -> str:
+
+    template = _load_template(
+        "visual_bible.txt"
     )
 
+    if template:
 
-def run(topic, research: dict, config=None, qwen=None) -> dict:
-    art_style = getattr(config, "art_style", None) if config else None
-    if isinstance(art_style, dict):
-        art_style = art_style.get("description") or art_style.get("primary")
-    art_style = str(art_style or _DEFAULT_STYLE)
+        overview = ""
 
-    base = {
-        "period": getattr(topic, "period", "") or "unspecified",
-        "region": getattr(topic, "region", "") or "unspecified",
+        if isinstance(research, dict):
+            overview = research.get(
+                "overview",
+                ""
+            )
+
+        if not isinstance(
+            overview,
+            str
+        ):
+            overview = str(overview)
+
+        try:
+            return template.format(
+                topic_title=topic.title,
+                region=topic.region,
+                period=topic.period,
+                research_summary=overview[:2500],
+                art_style=art_style
+            )
+        except Exception:
+            pass
+
+    # Safe fallback prompt.
+    return f"""
+Create a visual bible for this historical documentary topic.
+
+Topic:
+{topic.title}
+
+Category:
+{topic.category}
+
+Region:
+{topic.region}
+
+Period:
+{topic.period}
+
+Description:
+{topic.description}
+
+Research:
+{json.dumps(research, ensure_ascii=False)[:5000]}
+
+Locked art style:
+{art_style}
+
+Return ONLY valid JSON with these fields:
+
+{{
+  "architecture": "...",
+  "clothing": "...",
+  "materials": "...",
+  "environment": "...",
+  "people": "...",
+  "lighting": "..."
+}}
+
+Rules:
+
+- Use historically appropriate details.
+- Do not invent unsupported architecture.
+- Do not invent clothing.
+- Do not invent technologies.
+- Do not invent ethnic identities.
+- Do not invent physical characteristics.
+- If something is unknown, say so.
+- Keep mythology separate from established history.
+- Keep oral traditions separate from established history.
+"""
+
+
+def run(
+    paths,
+    job_id,
+    topic,
+    research,
+    config,
+    qwen
+):
+
+    # ---------------------------------------------------------
+    # LOCKED SERIES ART STYLE
+    # ---------------------------------------------------------
+
+    art_style = getattr(
+        config,
+        "art_style",
+        None
+    )
+
+    if isinstance(
+        art_style,
+        dict
+    ):
+        art_style = (
+            art_style.get("description")
+            or art_style.get("primary")
+        )
+
+    art_style = str(
+        art_style or DEFAULT_STYLE
+    ).strip()
+
+
+    # ---------------------------------------------------------
+    # BASE VISUAL BIBLE
+    # ---------------------------------------------------------
+
+    bible = {
+
+        "period": (
+            getattr(topic, "period", "")
+            or "unspecified"
+        ),
+
+        "region": (
+            getattr(topic, "region", "")
+            or "unspecified"
+        ),
+
         "architecture": "",
+
         "clothing": "",
+
         "materials": "",
+
         "environment": "",
+
         "people": "",
-        "lighting": _DEFAULT_LIGHTING,
-        "style": art_style,   # locked -- never overwritten below
+
+        "lighting": DEFAULT_LIGHTING,
+
+        # NEVER allow Qwen to change this.
+        "style": art_style
     }
 
+
+    # ---------------------------------------------------------
+    # ASK QWEN FOR TOPIC-SPECIFIC DETAILS
+    # ---------------------------------------------------------
+
     if qwen is not None:
-        prompt = build_prompt(topic, research, art_style)
+
+        prompt = build_prompt(
+            topic,
+            research,
+            art_style
+        )
+
         try:
-            result = qwen.generate_json(prompt, max_new_tokens=800)
-        except ValueError:
+
+            result = qwen.generate_json(
+                prompt,
+                max_new_tokens=900
+            )
+
+        except Exception as exc:
+
+            print(
+                "Visual bible generation warning:",
+                exc
+            )
+
             result = {}
-        if isinstance(result, dict):
-            for key in ("architecture", "clothing", "materials", "environment", "people"):
-                val = result.get(key)
-                if isinstance(val, str) and val.strip():
-                    base[key] = val.strip()
-            lighting = result.get("lighting")
-            if isinstance(lighting, str) and lighting.strip():
-                base["lighting"] = lighting.strip()
-            # `style` intentionally ignored even if the model returns one --
-            # config.art_style is the single source of truth for the look.
 
-    for key in ("architecture", "clothing", "materials", "environment", "people"):
-        if not base[key]:
-            base[key] = "(not specified)"
 
-    return base
+        if isinstance(
+            result,
+            dict
+        ):
+
+            allowed = [
+                "architecture",
+                "clothing",
+                "materials",
+                "environment",
+                "people"
+            ]
+
+            for key in allowed:
+
+                value = result.get(key)
+
+                if isinstance(
+                    value,
+                    str
+                ) and value.strip():
+
+                    bible[key] = value.strip()
+
+
+            lighting = result.get(
+                "lighting"
+            )
+
+            if isinstance(
+                lighting,
+                str
+            ) and lighting.strip():
+
+                bible["lighting"] = (
+                    lighting.strip()
+                )
+
+
+    # ---------------------------------------------------------
+    # FALLBACKS
+    # ---------------------------------------------------------
+
+    for key in [
+        "architecture",
+        "clothing",
+        "materials",
+        "environment",
+        "people"
+    ]:
+
+        if not bible[key]:
+
+            bible[key] = (
+                "Use only historically supported "
+                "details from the research."
+            )
+
+
+    # ---------------------------------------------------------
+    # SAVE TO DRIVE
+    # ---------------------------------------------------------
+
+    write_json_atomic(
+        paths.visual_bible(job_id),
+        bible
+    )
+
+    return bible
