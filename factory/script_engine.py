@@ -333,7 +333,7 @@ def run(
     last_error = ""
     final_text = ""
 
-    for attempt in range(4):
+    for attempt in range(100):
 
         correction = ""
 
