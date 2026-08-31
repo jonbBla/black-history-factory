@@ -189,11 +189,11 @@ VISUAL BIBLE:
 
 
 def run(
-    paths,
-    job_id,
-    narration,
-    vb,
-    config,
+    paths, 
+    job_id, 
+    topic, 
+    verified, 
+    config, 
     qwen
 ):
 
