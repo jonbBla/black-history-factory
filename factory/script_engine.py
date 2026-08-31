@@ -1,20 +1,26 @@
-import json
-from .utils import write_text_atomic, write_json_atomic
+from .utils import (
+    write_text_atomic,
+    write_json_atomic
+)
 
 
 def word_count(text):
-    return len(text.split())
+
+    return len(
+        str(text).split()
+    )
 
 
-def incomplete(text):
-    text = text.strip()
+def is_incomplete(text):
+
+    text = str(
+        text or ""
+    ).strip()
 
     if not text:
         return True
 
-    words = text.rstrip(
-        ' .,;:!?\'"”’'
-    ).split()
+    words = text.split()
 
     if not words:
         return True
@@ -33,17 +39,26 @@ def incomplete(text):
         "of",
         "with",
         "for",
-        "from"
+        "from",
+        "as",
+        "or"
     }
 
-    if words[-1].lower() in bad_endings:
+    if words[-1].lower().strip(
+        ".,!?;:"
+    ) in bad_endings:
+
         return True
 
-    # Narration should normally finish with punctuation.
-    if text[-1] not in ".!?'\"”’":
-        return True
-
-    return False
+    return text[-1] not in (
+        ".",
+        "!",
+        "?",
+        "\"",
+        "'",
+        "”",
+        "’"
+    )
 
 
 def build_prompt(
@@ -53,69 +68,89 @@ def build_prompt(
     previous="",
     correction=""
 ):
+
+    minimum = max(
+        120,
+        int(config.narration_words_min) - 25
+    )
+
+    maximum = (
+        int(config.narration_words_max) + 25
+    )
+
     return f"""
-Write ONE complete, engaging, fast-paced vertical documentary narration.
+Write ONE complete narration for a fast-paced
+vertical historical documentary.
 
 TOPIC:
 {topic.title}
 
-TARGET LENGTH:
-Approximately {config.narration_words_min}-{config.narration_words_max}
-spoken words.
+REGION:
+{topic.region}
+
+PERIOD:
+{topic.period}
+
+TARGET:
+Approximately {config.narration_words_min}-
+{config.narration_words_max} words.
+
+ACCEPTABLE RANGE:
+{minimum}-{maximum} words.
+
+The target is flexible.
+Natural storytelling is more important than
+hitting an exact number.
+
+STORY STRUCTURE:
+
+1. Curiosity hook
+2. The question or mystery
+3. Historical context
+4. Evidence or discovery
+5. Explanation
+6. Unexpected detail
+7. Why it matters
+8. Strong conclusion
 
 IMPORTANT:
-The word count is a target, NOT a hard requirement.
-Natural storytelling is more important than hitting the exact number.
 
-A narration between roughly
-{max(120, config.narration_words_min - 20)}
-and
-{config.narration_words_max + 20}
-words is acceptable.
-
-STRUCTURE:
-
-1. Strong curiosity hook.
-2. The question, mystery, contradiction, or surprising detail.
-3. Historical context.
-4. Evidence or discovery.
-5. Explanation.
-6. Unexpected or lesser-known detail.
-7. Why it matters.
-8. Strong conclusion.
-
-RULES:
-
-- This must be ONE continuous narration.
-- Start with something that makes the viewer want to keep watching.
-- Do NOT repeat the hook later.
-- Do NOT repeat paragraphs.
-- Do NOT repeat the same fact unnecessarily.
-- Do NOT restart the story halfway through.
-- Do NOT use headings.
-- Do NOT use bullet points.
-- Do NOT include scene numbers.
-- Do NOT include a source card.
-- Do NOT include citations inside the narration.
+- Write one continuous narration.
+- Do not use headings.
+- Do not use bullet points.
+- Do not use scene numbers.
+- Do not repeat the opening hook.
+- Do not repeat sentences.
+- Do not repeat the same fact.
+- Do not restart the story.
+- Do not write a second conclusion.
+- Do not include a source card.
+- Do not include citations.
+- Do not include stage directions.
 - End with a complete sentence.
+- Do not stop halfway through a thought.
 - Mythology must be identified as mythology.
-- Oral traditions must be identified as oral traditions.
-- Scholarly interpretations must be identified as interpretations.
-- Uncertain claims must be clearly qualified.
-- Never invent people, places, dates, artifacts, technologies,
-  sources, quotations, or archaeological discoveries.
-- Do not make colonization the central framing.
-- Keep the narration conversational and compelling.
+- Oral tradition must be identified as oral tradition.
+- Scholarly interpretation must be identified as interpretation.
+- Uncertain claims must be identified as uncertain.
+- Never invent sources, dates, people, places,
+  artifacts, technologies or quotations.
+- Do not make colonization the central focus.
+
+The narration should feel like a human documentary
+voiceover rather than an academic article.
 
 {correction}
 
 RESEARCH:
+
 {research}
 
 PREVIOUS DRAFT:
+
 {previous}
 
-Return ONLY the narration text.
+Return ONLY the narration.
 """
 
 
@@ -127,22 +162,38 @@ def run(
     config,
     qwen
 ):
-    research = verified.get(
-        "research",
-        verified
-    )
+
+    # Fact checker normally returns the research
+    # fields directly. This also supports a nested
+    # "research" structure if one appears later.
+
+    if isinstance(
+        verified,
+        dict
+    ):
+
+        research = verified.get(
+            "research",
+            verified
+        )
+
+    else:
+
+        research = {}
+
 
     previous = ""
-    text = ""
+    final_text = ""
 
-    # Give Qwen up to three attempts.
+
     for attempt in range(3):
 
         correction = ""
 
-        if attempt:
+        if attempt > 0:
+
             correction = f"""
-The previous draft failed validation.
+The previous narration failed validation.
 
 Previous word count:
 {word_count(previous)}
@@ -150,18 +201,19 @@ Previous word count:
 Previous draft:
 {previous}
 
-Rewrite the ENTIRE narration.
+Generate a COMPLETELY NEW version.
 
-Do not simply append text.
+Do NOT append another paragraph.
 
-Make sure the new narration:
-- is complete
-- does not repeat itself
-- has a strong hook
-- flows from beginning to end
-- ends with a complete sentence
-- is approximately {config.narration_words_min}-{config.narration_words_max} words
+Do NOT repeat the same sentences.
+
+Make sure the narration reaches a natural
+conclusion and ends with a complete sentence.
+
+Keep it around {config.narration_words_min}-
+{config.narration_words_max} words.
 """
+
 
         prompt = build_prompt(
             topic,
@@ -171,57 +223,78 @@ Make sure the new narration:
             correction=correction
         )
 
-        text = qwen.generate(
+
+        final_text = qwen.generate(
             prompt,
             max_new_tokens=1200,
-            temperature=0.70 if attempt == 0 else 0.55
+            temperature=(
+                0.70
+                if attempt == 0
+                else 0.55
+            )
         ).strip()
 
-        previous = text
 
-        count = word_count(text)
+        previous = final_text
 
-        # Reasonable range rather than an exact count.
+        count = word_count(
+            final_text
+        )
+
+
         minimum = max(
             120,
-            config.narration_words_min - 20
+            int(config.narration_words_min) - 25
         )
 
         maximum = (
-            config.narration_words_max + 20
+            int(config.narration_words_max) + 25
         )
+
 
         if (
             minimum <= count <= maximum
-            and not incomplete(text)
+            and not is_incomplete(final_text)
         ):
+
             break
 
+
     else:
+
         raise ValueError(
             "Narration failed validation after "
-            f"3 attempts. Final word count: "
-            f"{word_count(text)}"
+            f"3 attempts. Final count: "
+            f"{word_count(final_text)} words."
         )
+
 
     write_text_atomic(
         paths.narration(job_id),
-        text
+        final_text
     )
+
 
     write_json_atomic(
         paths.script(job_id),
         {
-            "word_count": word_count(text),
-            "target_seconds": config.target_video_seconds,
-            "format": "fast-paced vertical documentary",
+            "word_count": word_count(
+                final_text
+            ),
+            "target_seconds": (
+                config.target_video_seconds
+            ),
+            "format": (
+                "fast-paced vertical documentary"
+            ),
             "hook": (
-                text.splitlines()[0]
-                if text.splitlines()
+                final_text.splitlines()[0]
+                if final_text.splitlines()
                 else ""
             ),
             "validated": True
         }
     )
 
-    return text
+
+    return final_text
