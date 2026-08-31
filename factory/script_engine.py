@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 
 from .utils import write_text_atomic, write_json_atomic
 
