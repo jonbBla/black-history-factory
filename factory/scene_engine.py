@@ -13,32 +13,91 @@ CAMERAS = [
 ]
 
 
-def normalize(value):
+TRANSITIONS = [
+    "hard_cut",
+    "hard_cut",
+    "hard_cut",
+    "crossfade"
+]
+
+
+def normalize(text):
+
     return " ".join(
-        str(value or "").lower().split()
-    ).strip()
+        str(text or "")
+        .lower()
+        .strip()
+        .split()
+    )
 
 
-def validate_scenes(scenes, config):
+def similarity(a, b):
 
-    if not isinstance(scenes, list):
-        return False, "Output is not a scene list."
+    a_words = set(
+        normalize(a).split()
+    )
+
+    b_words = set(
+        normalize(b).split()
+    )
+
+    if not a_words or not b_words:
+        return 0.0
+
+    return len(
+        a_words & b_words
+    ) / len(
+        a_words | b_words
+    )
+
+
+def validate_scenes(
+    scenes,
+    config
+):
+
+    if not isinstance(
+        scenes,
+        list
+    ):
+
+        return False, (
+            "Scene output is not a list."
+        )
+
 
     if not (
         config.scene_count_min
         <= len(scenes)
         <= config.scene_count_max
     ):
+
         return False, (
-            f"Scene count {len(scenes)} is outside "
+            f"Scene count {len(scenes)} "
+            f"is outside "
             f"{config.scene_count_min}-"
             f"{config.scene_count_max}."
         )
 
-    narration_seen = set()
-    visual_seen = set()
 
-    for scene in scenes:
+    narrations = []
+    visuals = []
+
+
+    for index, scene in enumerate(
+        scenes,
+        start=1
+    ):
+
+        if not isinstance(
+            scene,
+            dict
+        ):
+
+            return False, (
+                f"Scene {index} is not an object."
+            )
+
 
         required = [
             "narration",
@@ -48,11 +107,18 @@ def validate_scenes(scenes, config):
             "historical_role"
         ]
 
+
         for key in required:
+
             if not str(
                 scene.get(key, "")
             ).strip():
-                return False, f"Missing {key}."
+
+                return False, (
+                    f"Scene {index} "
+                    f"is missing {key}."
+                )
+
 
         narration = normalize(
             scene["narration"]
@@ -62,30 +128,61 @@ def validate_scenes(scenes, config):
             scene["visual_focus"]
         )
 
-        # Exact duplicate detection.
-        if narration in narration_seen:
+
+        if narration in narrations:
+
             return False, (
-                "Repeated scene narration detected."
+                f"Scene {index} repeats "
+                "previous narration."
             )
 
-        if visual in visual_seen:
+
+        if visual in visuals:
+
             return False, (
-                "Repeated visual focus detected."
+                f"Scene {index} repeats "
+                "previous visual."
             )
 
-        narration_seen.add(narration)
-        visual_seen.add(visual)
 
-        # Individual scene narration should stay short.
+        # Prevent near-identical narration.
+        for previous in narrations:
+
+            if similarity(
+                narration,
+                previous
+            ) >= 0.82:
+
+                return False, (
+                    f"Scene {index} is too "
+                    "similar to another scene."
+                )
+
+
         words = len(
-            str(scene["narration"]).split()
+            str(
+                scene["narration"]
+            ).split()
         )
 
+
         if words > 16:
+
             return False, (
-                f"Scene narration is too long "
-                f"({words} words)."
+                f"Scene {index} contains "
+                f"{words} words. "
+                "Maximum is 16."
             )
+
+
+        narrations.append(
+            narration
+        )
+
+        visuals.append(
+            visual
+        )
+
 
     return True, "OK"
 
@@ -98,77 +195,105 @@ def build_prompt(
 ):
 
     return f"""
-You are the visual scene planner for a
-fast-paced historical documentary.
+You are the scene planner for a fast-paced
+historical documentary.
 
-Break the narration into
+Turn the following COMPLETE narration into
 {config.scene_count_min}-{config.scene_count_max}
 UNIQUE visual scenes.
 
-The narration is ONE continuous story.
+The narration is approximately
+{config.narration_words_min}-{config.narration_words_max}
+words.
 
-CRITICAL RULES:
+IMPORTANT:
 
-1. Preserve the original narration order.
-2. Every part of the narration must be represented.
-3. Every narration segment must appear ONCE.
-4. NEVER repeat the hook later.
-5. NEVER repeat a sentence.
-6. NEVER repeat a fact unnecessarily.
-7. NEVER repeat the same event.
-8. NEVER restart the story.
-9. NEVER create a second conclusion.
-10. NEVER create a source card.
-11. NEVER create citations.
-12. NEVER create text cards.
-13. Do not invent unsupported historical details.
-14. Each scene should advance the story.
-15. Keep each scene narration to 16 words or fewer.
-16. Prefer approximately 4-12 spoken words per scene.
-17. Use different visual focuses whenever possible.
-18. Use varied camera movements.
-19. The final scene should conclude the story naturally.
+Each scene is a SHORT VISUAL BEAT.
 
-The final source card is handled separately by the
-video processor.
+Each scene narration must contain
+4-16 spoken words.
 
-PREFERRED VISUAL TYPES:
+The entire narration must be covered from
+beginning to end.
+
+DO NOT duplicate narration.
+
+DO NOT duplicate the hook.
+
+DO NOT repeat facts.
+
+DO NOT restart the story.
+
+DO NOT create a second conclusion.
+
+DO NOT simply copy the same sentences twice.
+
+Every scene must advance the story.
+
+A scene may combine a few adjacent words
+from the narration, but it must preserve the
+original meaning and chronological order.
+
+VISUAL RULES:
+
+Every scene should have a meaningfully
+different visual focus.
+
+Prefer:
 
 - people
 - architecture
+- interiors
 - landscapes
 - artifacts
 - tools
-- maps
-- environments
-- historical reconstruction
-- close-ups
-- daily life
-- evidence
-- ceremonies
-- technology
 - craftsmanship
+- maps
+- settlements
+- ceremonies
+- daily life
 - trade
-- interiors
+- technology
+- archaeological evidence
+- environmental details
+- close-ups
+- wide establishing shots
 
-Do NOT force all categories into the video.
-Choose visuals that actually correspond to the narration.
+Do not invent unsupported historical details.
 
-ALLOWED CAMERAS:
+Do not add an artifact merely because it
+would look interesting.
+
+Use the research-supported visual bible.
+
+CAMERA OPTIONS:
 
 {CAMERAS}
 
-Return ONLY valid JSON in this exact structure:
+TRANSITIONS:
+
+{TRANSITIONS}
+
+Use hard cuts frequently.
+Use crossfade mainly for changes of
+time, location or mood.
+
+The final scene should finish the documentary.
+
+DO NOT create the source card.
+The video processor will create the source card.
+
+Return ONLY:
 
 {{
   "scenes": [
     {{
       "scene_id": 1,
-      "narration": "short narration beat",
-      "visual_focus": "specific visual",
+      "narration": "...",
+      "visual_focus": "...",
       "camera": "zoom_in",
       "transition": "hard_cut",
-      "historical_role": "what this scene communicates"
+      "historical_role": "..."
     }}
   ]
 }}
@@ -189,17 +314,16 @@ VISUAL BIBLE:
 
 
 def run(
-    paths, 
-    job_id, 
-    narration, 
-    vb, 
-    config, 
+    paths,
+    job_id,
+    narration,
+    vb,
+    config,
     qwen
 ):
 
     last_error = ""
 
-    # Up to three attempts.
     for attempt in range(3):
 
         correction = ""
@@ -207,51 +331,70 @@ def run(
         if attempt:
 
             correction = f"""
-The previous scene plan FAILED validation.
+The previous scene plan FAILED.
 
 Reason:
 {last_error}
 
-Regenerate the ENTIRE scene list.
+Generate the ENTIRE scene plan again.
 
-Do not patch the previous result.
+Do not modify only one scene.
 
-You MUST remove all repeated narration
-and repeated visual focuses.
+The new version must:
 
-Make every scene advance the story.
+- contain no repeated narration
+- contain no repeated visuals
+- contain no repeated hook
+- contain no second conclusion
+- keep every scene under 16 words
+- cover the complete narration
+- move forward chronologically
 """
+
 
         prompt = build_prompt(
             narration,
             vb,
             config,
-            correction=correction
+            correction
         )
+
 
         raw = qwen.generate_json(
             prompt,
-            max_new_tokens=4500
+            max_new_tokens=4200
         )
 
-        if isinstance(raw, dict):
+
+        if isinstance(
+            raw,
+            dict
+        ):
+
             scenes = raw.get(
                 "scenes",
                 []
             )
+
         else:
+
             scenes = raw
+
 
         valid, error = validate_scenes(
             scenes,
             config
         )
 
+
         if not valid:
+
             last_error = error
             continue
 
+
         output = []
+
 
         for index, scene in enumerate(
             scenes,
@@ -261,79 +404,162 @@ Make every scene advance the story.
             focus = str(
                 scene.get(
                     "visual_focus",
-                    "historical scene"
+                    ""
                 )
             ).strip()
+
 
             camera = scene.get(
                 "camera"
             )
 
             if camera not in CAMERAS:
+
                 camera = CAMERAS[
-                    (index - 1) % len(CAMERAS)
+                    (index - 1)
+                    % len(CAMERAS)
                 ]
 
-            period = vb.get(
-                "period",
-                ""
+
+            transition = scene.get(
+                "transition",
+                "hard_cut"
             )
 
-            region = vb.get(
-                "region",
-                ""
-            )
+            if transition not in (
+                "hard_cut",
+                "crossfade"
+            ):
 
-            style = vb.get(
-                "style",
-                ""
-            )
+                transition = "hard_cut"
 
-            lighting = vb.get(
-                "lighting",
-                "dramatic natural light"
-            )
+
+            period = str(
+                vb.get(
+                    "period",
+                    ""
+                )
+            ).strip()
+
+
+            region = str(
+                vb.get(
+                    "region",
+                    ""
+                )
+            ).strip()
+
+
+            style = str(
+                vb.get(
+                    "style",
+                    ""
+                )
+            ).strip()
+
+
+            lighting = str(
+                vb.get(
+                    "lighting",
+                    ""
+                )
+            ).strip()
+
+
+            architecture = str(
+                vb.get(
+                    "architecture",
+                    ""
+                )
+            ).strip()
+
+
+            clothing = str(
+                vb.get(
+                    "clothing",
+                    ""
+                )
+            ).strip()
+
+
+            materials = str(
+                vb.get(
+                    "materials",
+                    ""
+                )
+            ).strip()
+
+
+            environment = str(
+                vb.get(
+                    "environment",
+                    ""
+                )
+            ).strip()
+
+
+            people = str(
+                vb.get(
+                    "people",
+                    ""
+                )
+            ).strip()
+
 
             image_prompt = (
                 f"{focus}, "
                 f"{period}, "
                 f"{region}, "
+                f"{architecture}, "
+                f"{clothing}, "
+                f"{materials}, "
+                f"{environment}, "
+                f"{people}, "
                 f"{style}, "
-                f"{lighting}"
+                f"{lighting}, "
+                "highly detailed environments, "
+                "realistic textures, "
+                "dramatic scale, "
+                "realistic proportions"
             )
+
 
             output.append(
                 {
                     "scene_id": index,
+
                     "narration": str(
                         scene["narration"]
                     ).strip(),
+
                     "visual_focus": focus,
+
                     "camera": camera,
-                    "transition": str(
-                        scene.get(
-                            "transition",
-                            "hard_cut"
-                        )
-                    ).strip(),
+
+                    "transition": transition,
+
                     "historical_role": str(
                         scene.get(
                             "historical_role",
                             ""
                         )
                     ).strip(),
+
                     "image_prompt": image_prompt
                 }
             )
+
 
         write_json_atomic(
             paths.scenes(job_id),
             output
         )
 
+
         return output
 
+
     raise ValueError(
-        "Scene planning failed after 3 attempts: "
-        + last_error
+        "Scene planning failed after "
+        f"3 attempts: {last_error}"
     )
