@@ -1,11 +1,7 @@
 from dataclasses import dataclass, asdict
 import os
 
-from .utils import (
-    read_json,
-    write_json_atomic,
-    now_iso,
-)
+from .utils import read_json, write_json_atomic, now_iso
 
 
 @dataclass
@@ -27,14 +23,9 @@ class Topic:
 
 
 def load_topics(paths):
-    data = read_json(
-        paths.topics_json,
-        [],
-    ) or []
-
     return [
         Topic(**x)
-        for x in data
+        for x in read_json(paths.topics_json, [])
         if isinstance(x, dict)
     ]
 
@@ -44,216 +35,79 @@ def _jobs_dir(paths):
 
 
 def _next_job_id(paths):
-
     jobs_dir = _jobs_dir(paths)
 
     if not os.path.isdir(jobs_dir):
-        os.makedirs(
-            jobs_dir,
-            exist_ok=True,
-        )
+        return "BH000001"
 
-    numbers = []
+    nums = []
 
     for name in os.listdir(jobs_dir):
+        if name.startswith("BH"):
+            try:
+                nums.append(int(name[2:]))
+            except ValueError:
+                pass
 
-        if not name.startswith("BH"):
-            continue
-
-        try:
-            numbers.append(
-                int(name[2:])
-            )
-        except ValueError:
-            pass
-
-    return f"BH{max(numbers, default=0) + 1:06d}"
+    return f"BH{max(nums, default=0) + 1:06d}"
 
 
-def _job_status(paths, job_id):
+def update_status(paths, job_id, status, **extra):
+    """
+    Update the main job manifest.
 
-    data = read_json(
-        paths.manifest(job_id),
-        {},
-    ) or {}
+    This is used by qwen_pipeline.py after each major stage.
+    """
+    manifest_path = paths.manifest(job_id)
 
-    return data.get(
-        "status",
-        "",
-    )
+    data = read_json(manifest_path, {}) or {}
 
+    data["job_id"] = job_id
+    data["status"] = status
+    data["updated_at"] = now_iso()
 
-def find_resumable_job(paths):
+    for key, value in extra.items():
+        data[key] = value
 
-    jobs_dir = _jobs_dir(paths)
+    write_json_atomic(manifest_path, data)
 
-    if not os.path.isdir(jobs_dir):
-        return None, None
-
-    topics = {
-        t.id: t
-        for t in load_topics(paths)
-    }
-
-    # States that mean the job is unfinished.
-    resumable_statuses = {
-        "QWEN_RESEARCHING",
-        "QWEN_FACT_CHECKING",
-        "QWEN_VISUAL_BIBLE",
-        "QWEN_NARRATION",
-        "QWEN_SCENE_PLANNING",
-        "QWEN_ERROR",
-    }
-
-    candidates = []
-
-    for name in os.listdir(jobs_dir):
-
-        if not name.startswith("BH"):
-            continue
-
-        manifest = read_json(
-            paths.manifest(name),
-            {},
-        ) or {}
-
-        if not manifest:
-            continue
-
-        topic_id = manifest.get(
-            "topic_id"
-        )
-
-        status = manifest.get(
-            "status",
-            "",
-        )
-
-        if (
-            topic_id in topics
-            and status in resumable_statuses
-        ):
-            candidates.append(
-                (
-                    manifest.get(
-                        "created_at",
-                        "",
-                    ),
-                    name,
-                    topics[topic_id],
-                )
-            )
-
-    if not candidates:
-        return None, None
-
-    # Oldest incomplete job first.
-    candidates.sort(
-        key=lambda x: x[0]
-    )
-
-    _, job_id, topic = candidates[0]
-
-    return topic, job_id
+    return data
 
 
-def _claimed_topic_ids(paths):
-
-    claimed = set()
-
-    jobs_dir = _jobs_dir(paths)
-
-    if not os.path.isdir(jobs_dir):
-        return claimed
-
-    for name in os.listdir(jobs_dir):
-
-        if not name.startswith("BH"):
-            continue
-
-        manifest = read_json(
-            paths.manifest(name),
-            {},
-        ) or {}
-
-        topic_id = manifest.get(
-            "topic_id"
-        )
-
-        status = manifest.get(
-            "status",
-            "",
-        )
-
-        # Any job that isn't completely finished
-        # still owns its topic.
-        if topic_id and status not in {
-            "QWEN_READY",
-            "REJECTED",
-        }:
-            claimed.add(topic_id)
-
-    return claimed
-
-
-def claim_next_topic(
-    paths,
-    processor="qwen",
-):
-
+def claim_next_topic(paths, processor="qwen"):
     topics = load_topics(paths)
 
-    claimed = _claimed_topic_ids(paths)
+    jobs_dir = _jobs_dir(paths)
+    claimed = set()
 
-    # First check for an existing resumable job.
-    topic, existing_job = find_resumable_job(
-        paths
-    )
+    if os.path.isdir(jobs_dir):
+        for name in os.listdir(jobs_dir):
+            manifest = read_json(paths.manifest(name), {})
 
-    if topic and existing_job:
-        return topic, existing_job
+            if manifest and manifest.get("topic_id"):
+                claimed.add(manifest["topic_id"])
 
     for topic in topics:
-
-        if topic.used:
-            continue
-
-        if topic.id in claimed:
+        if topic.used or topic.id in claimed:
             continue
 
         job_id = _next_job_id(paths)
 
-        # Create only the job root/state directory.
-        # Individual processors create their own files.
-        os.makedirs(
-            paths.job(job_id),
-            exist_ok=True,
-        )
+        os.makedirs(paths.job(job_id), exist_ok=True)
+        os.makedirs(paths.job(job_id, "state"), exist_ok=True)
 
-        os.makedirs(
-            paths.job(
-                job_id
-            ) + "/state",
-            exist_ok=True,
-        )
-
-        write_json_atomic(
-            paths.manifest(job_id),
-            {
-                "job_id": job_id,
-                "topic_id": topic.id,
-                "title": topic.title,
-                "created_at": now_iso(),
-                "claimed_by": processor,
-                "status": "QWEN_RESEARCHING",
-            },
+        update_status(
+            paths,
+            job_id,
+            "QWEN_RESEARCHING",
+            topic_id=topic.id,
+            title=topic.title,
+            created_at=now_iso(),
+            claimed_by=processor,
         )
 
         write_json_atomic(
-            paths.state(
-                job_id,
-                "qwen",
-            ),
+            paths.state(job_id, "qwen"),
             {
                 "status": "claimed",
                 "updated_at": now_iso(),
@@ -266,41 +120,73 @@ def claim_next_topic(
     return None, None
 
 
+def find_resumable_job(paths):
+    """
+    Find a Qwen job that was started but did not finish.
+
+    This allows Colab to resume from Drive after a reset.
+    """
+    jobs_dir = _jobs_dir(paths)
+
+    if not os.path.isdir(jobs_dir):
+        return None, None
+
+    topics = {
+        t.id: t
+        for t in load_topics(paths)
+    }
+
+    resumable_statuses = {
+        "QWEN_RESEARCHING",
+        "FACT_CHECKING",
+        "QWEN_FACT_CHECK",
+        "QWEN_VISUAL_BIBLE",
+        "QWEN_NARRATION",
+        "QWEN_SCENE_PLANNING",
+        "SCENE_PLANNING",
+        "QWEN_ERROR",
+    }
+
+    for name in sorted(os.listdir(jobs_dir)):
+        if not name.startswith("BH"):
+            continue
+
+        manifest = read_json(paths.manifest(name), {}) or {}
+
+        if manifest.get("status") not in resumable_statuses:
+            continue
+
+        topic_id = manifest.get("topic_id")
+        topic = topics.get(topic_id)
+
+        if topic:
+            return topic, name
+
+    return None, None
+
+
 def mark_used(paths, topic):
+    used = read_json(paths.used_topics_json, []) or []
 
-    used = read_json(
-        paths.used_topics_json,
-        [],
-    ) or []
-
-    if not any(
-        isinstance(x, dict)
-        and x.get("id") == topic.id
-        for x in used
-    ):
-        used.append(
-            topic.to_dict()
-        )
+    if not any(x.get("id") == topic.id for x in used):
+        used.append(topic.to_dict())
 
     write_json_atomic(
         paths.used_topics_json,
-        used,
+        used
     )
 
     topics = load_topics(paths)
 
-    updated = []
+    updated_topics = []
 
-    for current in topics:
+    for t in topics:
+        if t.id == topic.id:
+            t.used = True
 
-        if current.id == topic.id:
-            current.used = True
-
-        updated.append(
-            current.to_dict()
-        )
+        updated_topics.append(t.to_dict())
 
     write_json_atomic(
         paths.topics_json,
-        updated,
-    )
+        updated_topics
+                        )
