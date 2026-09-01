@@ -2,310 +2,404 @@ import re
 from .utils import write_text_atomic, write_json_atomic
 
 
-IDEAL_MIN = 185
-IDEAL_MAX = 195
+# ---------------------------------------------------------
+# SETTINGS
+# ---------------------------------------------------------
 
-ACCEPT_MIN = 175
-ACCEPT_MAX = 205
+TARGET_WORDS = 195
 
-GENERATION_TOKENS = 320
-REVISION_TOKENS = 300
+MIN_ACCEPTABLE_WORDS = 170
+MAX_ACCEPTABLE_WORDS = 220
+
+MAX_ATTEMPTS = 3
+
+MAX_NEW_TOKENS = 700
 
 
-def word_count(text):
-    return len(re.findall(r"\b[\w’'-]+\b", text))
+# ---------------------------------------------------------
+# WORD COUNT
+# ---------------------------------------------------------
 
+def count_words(text):
+    """
+    Consistent word counting used by both generation
+    and validation.
+    """
+
+    if not text:
+        return 0
+
+    # Remove common formatting.
+    text = re.sub(r"```(?:text)?", "", text)
+    text = text.replace("```", "")
+
+    # Count actual word-like tokens.
+    words = re.findall(
+        r"\b[\w’'-]+\b",
+        text,
+        flags=re.UNICODE
+    )
+
+    return len(words)
+
+
+# ---------------------------------------------------------
+# CLEAN OUTPUT
+# ---------------------------------------------------------
 
 def clean_narration(text):
-    if not isinstance(text, str):
+
+    if not text:
         return ""
 
     text = text.strip()
 
-    # Remove accidental markdown/code fences.
-    text = re.sub(r"^```(?:text|txt)?\s*", "", text, flags=re.I)
-    text = re.sub(r"\s*```$", "", text)
-
-    # Remove common model prefixes.
+    # Remove markdown/code fences.
     text = re.sub(
-        r"^(narration|documentary narration|script)\s*:\s*",
+        r"^```(?:text)?\s*",
         "",
         text,
-        flags=re.I,
+        flags=re.IGNORECASE
+    )
+
+    text = re.sub(
+        r"\s*```$",
+        "",
+        text
+    )
+
+    # Remove accidental labels.
+    text = re.sub(
+        r"^(Narration|Script|Voiceover)\s*:\s*",
+        "",
+        text,
+        flags=re.IGNORECASE
     )
 
     return text.strip()
 
 
-def generate_initial(topic, research, config, qwen):
-    prompt = f"""
-Write a fast-paced documentary narration about:
+# ---------------------------------------------------------
+# PROMPT
+# ---------------------------------------------------------
+
+def build_prompt(topic, research, target_words):
+
+    research_text = str(research)
+
+    # Keep the prompt reasonably small for the 1.5B model.
+    research_text = research_text[:12000]
+
+    return f"""
+Write a fast-paced vertical documentary narration about:
 
 {topic.title}
 
-Create approximately 190 words.
-
-WORD REQUIREMENTS:
-- Ideal: 185–195 words.
-- Acceptable: 175–205 words.
-- ABSOLUTE MAXIMUM: 205 words.
-- Do not exceed 205 words.
-- Do not deliberately add words just to reach the target.
-
-STYLE:
-- Short, clear sentences.
-- Fast-paced vertical documentary/TikTok style.
-- Strong curiosity-driven opening.
-- Every sentence must move the story forward.
-- No repetition.
-- Do not repeat the opening later.
-- Do not repeat the same fact using different words.
-- End with a strong conclusion.
-- Do not include a title.
-- Do not include scene directions.
-- Do not include labels such as "Hook:" or "Conclusion:".
-- Return ONLY the narration.
-
-STORY FLOW:
-1. Hook / surprising question
-2. Context
-3. Main discovery or achievement
-4. Lesser-known or unexpected detail
-5. Why it matters
-6. Strong conclusion
-
-FACTUAL RULES:
-- Use only information supported by the research.
-- Never invent people, dates, places, technologies, buildings,
-  archaeological discoveries, quotations, or sources.
-- Clearly distinguish mythology, oral tradition and scholarly
-  interpretation from established facts.
-- Do not make colonization the central subject.
-
-RESEARCH:
-{research}
-"""
-
-    return clean_narration(
-        qwen.generate(
-            prompt,
-            max_new_tokens=GENERATION_TOKENS,
-            temperature=0.65,
-        )
-    )
-
-
-def revise_length(text, target_instruction, qwen):
-    prompt = f"""
-Revise the narration below.
-
-{target_instruction}
+TARGET LENGTH:
+Approximately {target_words} words.
 
 IMPORTANT:
-- Preserve the important historical information.
-- Preserve the hook and conclusion.
-- Keep the story chronological/logical.
-- Remove repetition.
-- Do not introduce new facts.
-- Do not invent information.
-- Return ONLY the revised narration.
-- No title.
-- No explanation.
-- No labels.
+- Aim for {target_words} words.
+- Acceptable final range is {MIN_ACCEPTABLE_WORDS}-{MAX_ACCEPTABLE_WORDS} words.
+- Do NOT intentionally write far shorter or longer.
+- Do not include a title.
+- Do not include scene numbers.
+- Do not include stage directions.
+- Output ONLY the narration.
 
-NARRATION:
+STRUCTURE:
+
+1. Start with a powerful hook.
+   Use a surprising fact, question, mystery, contradiction,
+   or something that makes the viewer immediately curious.
+
+2. Quickly establish what happened and where.
+
+3. Explain the important historical, technological,
+   architectural, artistic, cultural, or mythological details.
+
+4. Include lesser-known information when supported by the research.
+
+5. Clearly distinguish established facts from:
+   - archaeological evidence
+   - scholarly interpretation
+   - oral tradition
+   - mythology
+   - uncertainty
+
+6. Do not invent facts, people, dates, buildings,
+   technologies, artifacts, quotations, or sources.
+
+7. Do not make colonization the central theme.
+
+8. Keep the pacing energetic and suitable for a
+   roughly 90-second short video.
+
+9. End with a memorable conclusion.
+
+RESEARCH:
+{research_text}
+"""
+
+
+# ---------------------------------------------------------
+# CORRECTION PROMPT
+# ---------------------------------------------------------
+
+def build_correction_prompt(text, word_count):
+
+    if word_count < MIN_ACCEPTABLE_WORDS:
+
+        needed = TARGET_WORDS - word_count
+
+        instruction = f"""
+The narration is too short.
+
+Current length: {word_count} words.
+Target: approximately {TARGET_WORDS} words.
+
+Expand it naturally by roughly {max(20, needed)} words.
+
+Add useful historical information, context,
+a lesser-known verified detail, or significance.
+
+Do NOT repeat existing sentences.
+Do NOT add unsupported claims.
+
+Return ONLY the complete revised narration.
+"""
+
+    elif word_count > MAX_ACCEPTABLE_WORDS:
+
+        excess = word_count - TARGET_WORDS
+
+        instruction = f"""
+The narration is too long.
+
+Current length: {word_count} words.
+Target: approximately {TARGET_WORDS} words.
+
+Shorten it naturally by roughly {max(20, excess)} words.
+
+Remove repetition, unnecessary adjectives,
+and redundant explanations.
+
+Preserve the hook, important facts,
+interesting details, and conclusion.
+
+Do NOT remove important historical qualifications.
+
+Return ONLY the complete revised narration.
+"""
+
+    else:
+
+        instruction = """
+The narration is already within the acceptable range.
+
+Improve flow and pacing slightly if necessary,
+but do not significantly change its length.
+
+Return ONLY the complete narration.
+"""
+
+    return f"""
+{instruction}
+
+CURRENT NARRATION:
+
 {text}
 """
 
-    return clean_narration(
-        qwen.generate(
-            prompt,
-            max_new_tokens=REVISION_TOKENS,
-            temperature=0.45,
-        )
-    )
 
-
-def remove_repeated_sentences(text):
-    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
-
-    seen = set()
-    output = []
-
-    for sentence in sentences:
-        normalized = re.sub(r"[^a-z0-9 ]", "", sentence.lower())
-        normalized = re.sub(r"\s+", " ", normalized).strip()
-
-        if not normalized:
-            continue
-
-        if normalized in seen:
-            continue
-
-        seen.add(normalized)
-        output.append(sentence.strip())
-
-    return " ".join(output)
-
+# ---------------------------------------------------------
+# MAIN
+# ---------------------------------------------------------
 
 def run(paths, job_id, topic, verified, config, qwen):
 
-    research = verified.get("research", verified)
-
-    # ---------------------------------------------------------
-    # STEP 1 — Generate the first narration
-    # ---------------------------------------------------------
-    print(f"[SCRIPT] {job_id} | STAGE 1/4 | Generating ~190-word narration")
-
-    text = generate_initial(
-        topic,
-        research,
-        config,
-        qwen,
+    research = verified.get(
+        "research",
+        verified
     )
-
-    if not text:
-        raise ValueError("Qwen returned an empty narration.")
-
-    text = remove_repeated_sentences(text)
-
-    count = word_count(text)
 
     print(
-        f"[SCRIPT] {job_id} | Initial narration: "
-        f"{count} words"
+        f"[SCRIPT] {job_id} | "
+        f"TARGET: ~{TARGET_WORDS} words | "
+        f"acceptable: {MIN_ACCEPTABLE_WORDS}-{MAX_ACCEPTABLE_WORDS}"
     )
 
-    # ---------------------------------------------------------
-    # STEP 2 — Correct excessive length
-    # ---------------------------------------------------------
-    if count > ACCEPT_MAX:
+    # -----------------------------------------------------
+    # ATTEMPT 1 — DIRECT GENERATION
+    # -----------------------------------------------------
+
+    print(
+        f"[SCRIPT] {job_id} | "
+        f"ATTEMPT 1/{MAX_ATTEMPTS} | "
+        f"Generating narration"
+    )
+
+    prompt = build_prompt(
+        topic,
+        research,
+        TARGET_WORDS
+    )
+
+    text = qwen.generate(
+        prompt,
+        max_new_tokens=MAX_NEW_TOKENS,
+        temperature=0.7
+    )
+
+    text = clean_narration(text)
+
+    words = count_words(text)
+
+    print(
+        f"[SCRIPT] {job_id} | "
+        f"Attempt 1: {words} words"
+    )
+
+    # -----------------------------------------------------
+    # CHECK
+    # -----------------------------------------------------
+
+    if MIN_ACCEPTABLE_WORDS <= words <= MAX_ACCEPTABLE_WORDS:
+
+        final_text = text
 
         print(
-            f"[SCRIPT] {job_id} | STAGE 2/4 | "
-            f"Too long ({count}) → shortening"
+            f"[SCRIPT] {job_id} | "
+            f"ACCEPTED | {words} words"
         )
 
-        text = revise_length(
-            text,
-            f"Shorten this to approximately 190 words. "
-            f"Final result must be between {IDEAL_MIN} and "
-            f"{IDEAL_MAX} words if possible, and MUST NOT exceed "
-            f"{ACCEPT_MAX} words.",
-            qwen,
-        )
+    else:
 
-        text = remove_repeated_sentences(text)
-        count = word_count(text)
+        final_text = None
 
-        print(
-            f"[SCRIPT] {job_id} | After shortening: "
-            f"{count} words"
-        )
+        # -------------------------------------------------
+        # TARGETED RETRIES
+        # -------------------------------------------------
 
-    # ---------------------------------------------------------
-    # STEP 3 — Correct very short narration
-    # ---------------------------------------------------------
-    elif count < ACCEPT_MIN:
+        for attempt in range(2, MAX_ATTEMPTS + 1):
 
-        print(
-            f"[SCRIPT] {job_id} | STAGE 3/4 | "
-            f"Too short ({count}) → expanding"
-        )
+            print(
+                f"[SCRIPT] {job_id} | "
+                f"ATTEMPT {attempt}/{MAX_ATTEMPTS} | "
+                f"Correcting {words}-word narration"
+            )
 
-        text = revise_length(
-            text,
-            f"Expand this naturally to approximately 190 words. "
-            f"Final result should preferably be between "
-            f"{IDEAL_MIN} and {IDEAL_MAX} words. "
-            f"Only expand using information already present in "
-            f"the supplied research. Do not invent facts.",
-            qwen,
-        )
+            correction_prompt = build_correction_prompt(
+                text,
+                words
+            )
 
-        text = remove_repeated_sentences(text)
-        count = word_count(text)
+            text = qwen.generate(
+                correction_prompt,
+                max_new_tokens=MAX_NEW_TOKENS,
+                temperature=0.55
+            )
 
-        print(
-            f"[SCRIPT] {job_id} | After expansion: "
-            f"{count} words"
-        )
+            text = clean_narration(text)
 
-    # ---------------------------------------------------------
-    # STEP 4 — Final safety correction
-    # ---------------------------------------------------------
-    if count > ACCEPT_MAX:
+            words = count_words(text)
 
-        print(
-            f"[SCRIPT] {job_id} | STAGE 4/4 | "
-            f"Still too long ({count}) → final compression"
-        )
+            print(
+                f"[SCRIPT] {job_id} | "
+                f"Attempt {attempt}: {words} words"
+            )
 
-        text = revise_length(
-            text,
-            f"Compress this aggressively to 190 words or fewer. "
-            f"Absolute maximum is {ACCEPT_MAX} words. "
-            f"Remove repeated ideas, unnecessary adjectives, "
-            f"filler and redundant explanations. "
-            f"Do not remove the central historical facts.",
-            qwen,
-        )
+            if MIN_ACCEPTABLE_WORDS <= words <= MAX_ACCEPTABLE_WORDS:
 
-        text = remove_repeated_sentences(text)
-        count = word_count(text)
+                final_text = text
 
-        print(
-            f"[SCRIPT] {job_id} | Final count: "
-            f"{count} words"
-        )
+                print(
+                    f"[SCRIPT] {job_id} | "
+                    f"ACCEPTED | {words} words"
+                )
 
-    # ---------------------------------------------------------
+                break
+
+        # -------------------------------------------------
+        # FALLBACK
+        # -------------------------------------------------
+
+        if final_text is None:
+
+            # Do not destroy a reasonably sized narration
+            # merely because it missed the preferred range.
+            if 150 <= words <= 240:
+
+                final_text = text
+
+                print(
+                    f"[SCRIPT] {job_id} | "
+                    f"WARNING | accepting {words} words "
+                    f"after {MAX_ATTEMPTS} attempts"
+                )
+
+            else:
+
+                raise ValueError(
+                    f"Narration failed validation after "
+                    f"{MAX_ATTEMPTS} attempts. "
+                    f"Final count: {words} words."
+                )
+
+    # -----------------------------------------------------
     # FINAL VALIDATION
-    # ---------------------------------------------------------
-    if not text:
-        raise ValueError("Narration became empty after processing.")
+    # -----------------------------------------------------
 
-    if count > ACCEPT_MAX:
+    final_text = clean_narration(final_text)
+
+    final_count = count_words(final_text)
+
+    if not final_text:
         raise ValueError(
-            f"Narration failed validation: {count} words "
-            f"(maximum {ACCEPT_MAX})."
+            "Qwen returned an empty narration."
         )
 
-    if count < ACCEPT_MIN:
-        print(
-            f"[SCRIPT] {job_id} | WARNING: "
-            f"{count} words is below preferred range, "
-            f"but accepting the narration."
+    if final_count < 150:
+        raise ValueError(
+            f"Narration is unusably short: "
+            f"{final_count} words."
         )
 
-    # ---------------------------------------------------------
-    # SAVE OUTPUT
-    # ---------------------------------------------------------
+    if final_count > 240:
+        raise ValueError(
+            f"Narration is excessively long: "
+            f"{final_count} words."
+        )
+
+    # -----------------------------------------------------
+    # SAVE
+    # -----------------------------------------------------
+
     write_text_atomic(
         paths.narration(job_id),
-        text,
+        final_text
     )
 
     write_json_atomic(
         paths.script(job_id),
         {
-            "word_count": count,
-            "ideal_range": [IDEAL_MIN, IDEAL_MAX],
-            "accepted_range": [ACCEPT_MIN, ACCEPT_MAX],
+            "word_count": final_count,
+            "target_words": TARGET_WORDS,
+            "preferred_min_words": MIN_ACCEPTABLE_WORDS,
+            "preferred_max_words": MAX_ACCEPTABLE_WORDS,
             "target_seconds": config.target_video_seconds,
             "format": "fast-paced vertical documentary",
-            "status": "ready",
             "hook": (
-                text.splitlines()[0]
-                if text.splitlines()
+                final_text.splitlines()[0]
+                if final_text.splitlines()
                 else ""
-            ),
-        },
+            )
+        }
     )
 
     print(
-        f"[SCRIPT] {job_id} | COMPLETE | "
-        f"{count} words"
+        f"[SCRIPT] {job_id} | "
+        f"COMPLETE | {final_count} words"
     )
 
-    return text
+    return final_text
