@@ -55,9 +55,8 @@ def _next_job_id(paths):
 def update_status(paths, job_id, status, **extra):
     """
     Update the main job manifest.
-
-    This is used by qwen_pipeline.py after each major stage.
     """
+
     manifest_path = paths.manifest(job_id)
 
     data = read_json(manifest_path, {}) or {}
@@ -66,10 +65,12 @@ def update_status(paths, job_id, status, **extra):
     data["status"] = status
     data["updated_at"] = now_iso()
 
-    for key, value in extra.items():
-        data[key] = value
+    data.update(extra)
 
-    write_json_atomic(manifest_path, data)
+    write_json_atomic(
+        manifest_path,
+        data
+    )
 
     return data
 
@@ -81,20 +82,50 @@ def claim_next_topic(paths, processor="qwen"):
     claimed = set()
 
     if os.path.isdir(jobs_dir):
+
         for name in os.listdir(jobs_dir):
-            manifest = read_json(paths.manifest(name), {})
+
+            if not name.startswith("BH"):
+                continue
+
+            manifest = read_json(
+                paths.manifest(name),
+                {}
+            )
 
             if manifest and manifest.get("topic_id"):
-                claimed.add(manifest["topic_id"])
+                claimed.add(
+                    manifest["topic_id"]
+                )
 
     for topic in topics:
-        if topic.used or topic.id in claimed:
+
+        if topic.used:
+            continue
+
+        if topic.id in claimed:
             continue
 
         job_id = _next_job_id(paths)
 
-        os.makedirs(paths.job(job_id), exist_ok=True)
-        os.makedirs(paths.job(job_id, "state"), exist_ok=True)
+        # Create the job directory.
+        os.makedirs(
+            paths.job(job_id),
+            exist_ok=True
+        )
+
+        # IMPORTANT:
+        # DrivePaths.job() only accepts job_id.
+        # Therefore construct the state directory manually.
+        state_dir = os.path.join(
+            paths.job(job_id),
+            "state"
+        )
+
+        os.makedirs(
+            state_dir,
+            exist_ok=True
+        )
 
         update_status(
             paths,
@@ -103,7 +134,7 @@ def claim_next_topic(paths, processor="qwen"):
             topic_id=topic.id,
             title=topic.title,
             created_at=now_iso(),
-            claimed_by=processor,
+            claimed_by=processor
         )
 
         write_json_atomic(
@@ -111,8 +142,8 @@ def claim_next_topic(paths, processor="qwen"):
             {
                 "status": "claimed",
                 "updated_at": now_iso(),
-                "processor": processor,
-            },
+                "processor": processor
+            }
         )
 
         return topic, job_id
@@ -121,11 +152,7 @@ def claim_next_topic(paths, processor="qwen"):
 
 
 def find_resumable_job(paths):
-    """
-    Find a Qwen job that was started but did not finish.
 
-    This allows Colab to resume from Drive after a reset.
-    """
     jobs_dir = _jobs_dir(paths)
 
     if not os.path.isdir(jobs_dir):
@@ -145,18 +172,24 @@ def find_resumable_job(paths):
         "QWEN_SCENE_PLANNING",
         "SCENE_PLANNING",
         "QWEN_ERROR",
+        "FAILED"
     }
 
     for name in sorted(os.listdir(jobs_dir)):
+
         if not name.startswith("BH"):
             continue
 
-        manifest = read_json(paths.manifest(name), {}) or {}
+        manifest = read_json(
+            paths.manifest(name),
+            {}
+        ) or {}
 
         if manifest.get("status") not in resumable_statuses:
             continue
 
         topic_id = manifest.get("topic_id")
+
         topic = topics.get(topic_id)
 
         if topic:
@@ -166,10 +199,19 @@ def find_resumable_job(paths):
 
 
 def mark_used(paths, topic):
-    used = read_json(paths.used_topics_json, []) or []
 
-    if not any(x.get("id") == topic.id for x in used):
-        used.append(topic.to_dict())
+    used = read_json(
+        paths.used_topics_json,
+        []
+    ) or []
+
+    if not any(
+        x.get("id") == topic.id
+        for x in used
+    ):
+        used.append(
+            topic.to_dict()
+        )
 
     write_json_atomic(
         paths.used_topics_json,
@@ -181,12 +223,15 @@ def mark_used(paths, topic):
     updated_topics = []
 
     for t in topics:
+
         if t.id == topic.id:
             t.used = True
 
-        updated_topics.append(t.to_dict())
+        updated_topics.append(
+            t.to_dict()
+        )
 
     write_json_atomic(
         paths.topics_json,
         updated_topics
-)
+            )
