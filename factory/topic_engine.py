@@ -189,4 +189,4 @@ def mark_used(paths, topic):
     write_json_atomic(
         paths.topics_json,
         updated_topics
-                        )
+)
