@@ -1,565 +1,68 @@
-import json
-
+from __future__ import annotations
+import json, re
 from .utils import write_json_atomic
 
+CAMERAS = ["zoom_in", "zoom_out", "pan_left", "pan_right", "slow_push", "slow_pull"]
 
-CAMERAS = [
-    "zoom_in",
-    "zoom_out",
-    "pan_left",
-    "pan_right",
-    "slow_push",
-    "slow_pull"
-]
-
-
-TRANSITIONS = [
-    "hard_cut",
-    "hard_cut",
-    "hard_cut",
-    "crossfade"
-]
-
-
-def normalize(text):
-
-    return " ".join(
-        str(text or "")
-        .lower()
-        .strip()
-        .split()
-    )
-
+def norm(value):
+    return re.sub(r"[^a-z0-9 ]", "", str(value).lower()).strip()
 
 def similarity(a, b):
+    A, B = set(norm(a).split()), set(norm(b).split())
+    return len(A & B) / max(1, len(A | B))
 
-    a_words = set(
-        normalize(a).split()
-    )
-
-    b_words = set(
-        normalize(b).split()
-    )
-
-    if not a_words or not b_words:
-        return 0.0
-
-    return len(
-        a_words & b_words
-    ) / len(
-        a_words | b_words
-    )
-
-
-def validate_scenes(
-    scenes,
-    config
-):
-
-    if not isinstance(
-        scenes,
-        list
-    ):
-
-        return False, (
-            "Scene output is not a list."
-        )
-
-
-    if not (
-        config.scene_count_min
-        <= len(scenes)
-        <= config.scene_count_max
-    ):
-
-        return False, (
-            f"Scene count {len(scenes)} "
-            f"is outside "
-            f"{config.scene_count_min}-"
-            f"{config.scene_count_max}."
-        )
-
-
-    narrations = []
-    visuals = []
-
-
-    for index, scene in enumerate(
-        scenes,
-        start=1
-    ):
-
-        if not isinstance(
-            scene,
-            dict
-        ):
-
-            return False, (
-                f"Scene {index} is not an object."
-            )
-
-
-        required = [
-            "narration",
-            "visual_focus",
-            "camera",
-            "transition",
-            "historical_role"
-        ]
-
-
-        for key in required:
-
-            if not str(
-                scene.get(key, "")
-            ).strip():
-
-                return False, (
-                    f"Scene {index} "
-                    f"is missing {key}."
-                )
-
-
-        narration = normalize(
-            scene["narration"]
-        )
-
-        visual = normalize(
-            scene["visual_focus"]
-        )
-
-
-        if narration in narrations:
-
-            return False, (
-                f"Scene {index} repeats "
-                "previous narration."
-            )
-
-
-        if visual in visuals:
-
-            return False, (
-                f"Scene {index} repeats "
-                "previous visual."
-            )
-
-
-        # Prevent near-identical narration.
-        for previous in narrations:
-
-            if similarity(
-                narration,
-                previous
-            ) >= 0.82:
-
-                return False, (
-                    f"Scene {index} is too "
-                    "similar to another scene."
-                )
-
-
-        words = len(
-            str(
-                scene["narration"]
-            ).split()
-        )
-
-
-        if words > 16:
-
-            return False, (
-                f"Scene {index} contains "
-                f"{words} words. "
-                "Maximum is 16."
-            )
-
-
-        narrations.append(
-            narration
-        )
-
-        visuals.append(
-            visual
-        )
-
-
+def validate(scenes, config):
+    if not isinstance(scenes, list) or not int(config.scene_count_min) <= len(scenes) <= int(config.scene_count_max):
+        return False, "invalid scene count"
+    narr, visuals = [], []
+    for scene in scenes:
+        if any(not str(scene.get(k, "")).strip() for k in ("narration", "visual_focus", "historical_role")):
+            return False, "missing required scene field"
+        n, v = str(scene["narration"]).strip(), str(scene["visual_focus"]).strip()
+        if len(n.split()) > int(config.max_scene_words):
+            return False, f"scene narration too long: {len(n.split())} words"
+        if norm(n) in narr:
+            return False, "duplicate narration"
+        if any(similarity(v, old) >= 0.72 for old in visuals):
+            return False, "near-duplicate visual focus"
+        narr.append(norm(n)); visuals.append(v)
     return True, "OK"
 
-
-def build_prompt(
-    narration,
-    visual_bible,
-    config,
-    correction=""
-):
-
-    return f"""
-You are the scene planner for a fast-paced
-historical documentary.
-
-Turn the following COMPLETE narration into
-{config.scene_count_min}-{config.scene_count_max}
-UNIQUE visual scenes.
-
-The narration is approximately
-{config.narration_words_min}-{config.narration_words_max}
-words.
-
-IMPORTANT:
-
-Each scene is a SHORT VISUAL BEAT.
-
-Each scene narration must contain
-4-16 spoken words.
-
-The entire narration must be covered from
-beginning to end.
-
-DO NOT duplicate narration.
-
-DO NOT duplicate the hook.
-
-DO NOT repeat facts.
-
-DO NOT restart the story.
-
-DO NOT create a second conclusion.
-
-DO NOT simply copy the same sentences twice.
-
-Every scene must advance the story.
-
-A scene may combine a few adjacent words
-from the narration, but it must preserve the
-original meaning and chronological order.
-
-VISUAL RULES:
-
-Every scene should have a meaningfully
-different visual focus.
-
-Prefer:
-
-- people
-- architecture
-- interiors
-- landscapes
-- artifacts
-- tools
-- craftsmanship
-- maps
-- settlements
-- ceremonies
-- daily life
-- trade
-- technology
-- archaeological evidence
-- environmental details
-- close-ups
-- wide establishing shots
-
-Do not invent unsupported historical details.
-
-Do not add an artifact merely because it
-would look interesting.
-
-Use the research-supported visual bible.
-
-CAMERA OPTIONS:
-
-{CAMERAS}
-
-TRANSITIONS:
-
-{TRANSITIONS}
-
-Use hard cuts frequently.
-Use crossfade mainly for changes of
-time, location or mood.
-
-The final scene should finish the documentary.
-
-DO NOT create the source card.
-The video processor will create the source card.
-
-Return ONLY:
-
-{{
-  "scenes": [
-    {{
-      "scene_id": 1,
-      "narration": "...",
-      "visual_focus": "...",
-      "camera": "zoom_in",
-      "transition": "hard_cut",
-      "historical_role": "..."
-    }}
-  ]
-}}
-
+def build_prompt(narration, visual_bible, config, correction=""):
+    return f"""Break this narration into {config.scene_count_min}-{config.scene_count_max} UNIQUE visual beats.
+Every spoken part must appear once, in order. Each scene narration must be {config.max_scene_words} words or fewer.
+Do not repeat the hook, facts, events, sentences or conclusion. Every scene must advance the story.
+Use hard_cut normally; crossfade only for meaningful changes of time, place or mood. No source card. No citations.
+Return ONLY JSON: {{\"scenes\":[{{\"scene_id\":1,\"narration\":\"...\",\"visual_focus\":\"specific visual\",\"camera\":\"zoom_in\",\"transition\":\"hard_cut\",\"historical_role\":\"...\"}}]}}.
+Cameras: {CAMERAS}. Never invent unsupported historical details.
 {correction}
-
-FULL NARRATION:
-
+NARRATION:
 {narration}
-
 VISUAL BIBLE:
+{json.dumps(visual_bible, ensure_ascii=False)}"""
 
-{json.dumps(
-    visual_bible,
-    ensure_ascii=False
-)}
-"""
-
-
-def run(
-    paths,
-    job_id,
-    narration,
-    vb,
-    config,
-    qwen
-):
-
-    last_error = ""
-
-    for attempt in range(3):
-
-        correction = ""
-
-        if attempt:
-
-            correction = f"""
-The previous scene plan FAILED.
-
-Reason:
-{last_error}
-
-Generate the ENTIRE scene plan again.
-
-Do not modify only one scene.
-
-The new version must:
-
-- contain no repeated narration
-- contain no repeated visuals
-- contain no repeated hook
-- contain no second conclusion
-- keep every scene under 16 words
-- cover the complete narration
-- move forward chronologically
-"""
-
-
-        prompt = build_prompt(
-            narration,
-            vb,
-            config,
-            correction
+def run(paths, job_id, narration, vb, config, qwen):
+    error = ""
+    for _ in range(4):
+        raw = qwen.generate_json(build_prompt(narration, vb, config, error), max_new_tokens=3000)
+        scenes = raw.get("scenes", raw) if isinstance(raw, dict) else raw
+        ok, error = validate(scenes, config)
+        if ok:
+            break
+    else:
+        raise ValueError(f"Scene planning failed after 4 attempts: {error}")
+    out = []
+    for i, scene in enumerate(scenes, 1):
+        focus = str(scene["visual_focus"]).strip()
+        camera = scene.get("camera") if scene.get("camera") in CAMERAS else CAMERAS[(i - 1) % len(CAMERAS)]
+        image_prompt = (
+            f"{focus}, {vb.get('period','')}, {vb.get('region','')}, "
+            f"architecture: {vb.get('architecture','')}, clothing: {vb.get('clothing','')}, "
+            f"materials: {vb.get('materials','')}, environment: {vb.get('environment','')}, "
+            f"people: {vb.get('people','')}, {vb.get('style','')}, {vb.get('lighting','dramatic natural lighting')}"
         )
-
-
-        raw = qwen.generate_json(
-            prompt,
-            max_new_tokens=4200
-        )
-
-
-        if isinstance(
-            raw,
-            dict
-        ):
-
-            scenes = raw.get(
-                "scenes",
-                []
-            )
-
-        else:
-
-            scenes = raw
-
-
-        valid, error = validate_scenes(
-            scenes,
-            config
-        )
-
-
-        if not valid:
-
-            last_error = error
-            continue
-
-
-        output = []
-
-
-        for index, scene in enumerate(
-            scenes,
-            start=1
-        ):
-
-            focus = str(
-                scene.get(
-                    "visual_focus",
-                    ""
-                )
-            ).strip()
-
-
-            camera = scene.get(
-                "camera"
-            )
-
-            if camera not in CAMERAS:
-
-                camera = CAMERAS[
-                    (index - 1)
-                    % len(CAMERAS)
-                ]
-
-
-            transition = scene.get(
-                "transition",
-                "hard_cut"
-            )
-
-            if transition not in (
-                "hard_cut",
-                "crossfade"
-            ):
-
-                transition = "hard_cut"
-
-
-            period = str(
-                vb.get(
-                    "period",
-                    ""
-                )
-            ).strip()
-
-
-            region = str(
-                vb.get(
-                    "region",
-                    ""
-                )
-            ).strip()
-
-
-            style = str(
-                vb.get(
-                    "style",
-                    ""
-                )
-            ).strip()
-
-
-            lighting = str(
-                vb.get(
-                    "lighting",
-                    ""
-                )
-            ).strip()
-
-
-            architecture = str(
-                vb.get(
-                    "architecture",
-                    ""
-                )
-            ).strip()
-
-
-            clothing = str(
-                vb.get(
-                    "clothing",
-                    ""
-                )
-            ).strip()
-
-
-            materials = str(
-                vb.get(
-                    "materials",
-                    ""
-                )
-            ).strip()
-
-
-            environment = str(
-                vb.get(
-                    "environment",
-                    ""
-                )
-            ).strip()
-
-
-            people = str(
-                vb.get(
-                    "people",
-                    ""
-                )
-            ).strip()
-
-
-            image_prompt = (
-                f"{focus}, "
-                f"{period}, "
-                f"{region}, "
-                f"{architecture}, "
-                f"{clothing}, "
-                f"{materials}, "
-                f"{environment}, "
-                f"{people}, "
-                f"{style}, "
-                f"{lighting}, "
-                "highly detailed environments, "
-                "realistic textures, "
-                "dramatic scale, "
-                "realistic proportions"
-            )
-
-
-            output.append(
-                {
-                    "scene_id": index,
-
-                    "narration": str(
-                        scene["narration"]
-                    ).strip(),
-
-                    "visual_focus": focus,
-
-                    "camera": camera,
-
-                    "transition": transition,
-
-                    "historical_role": str(
-                        scene.get(
-                            "historical_role",
-                            ""
-                        )
-                    ).strip(),
-
-                    "image_prompt": image_prompt
-                }
-            )
-
-
-        write_json_atomic(
-            paths.scenes(job_id),
-            output
-        )
-
-
-        return output
-
-
-    raise ValueError(
-        "Scene planning failed after "
-        f"3 attempts: {last_error}"
-    )
+        out.append({"scene_id": i, "narration": str(scene["narration"]).strip(), "visual_focus": focus,
+                    "camera": camera, "transition": str(scene.get("transition", "hard_cut")),
+                    "historical_role": str(scene.get("historical_role", "")), "image_prompt": image_prompt})
+    write_json_atomic(paths.scenes(job_id), out)
+    return out

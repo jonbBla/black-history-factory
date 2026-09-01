@@ -1,277 +1,53 @@
-from dataclasses import dataclass, asdict
-import os
-
-from .utils import (
-    read_json,
-    write_json_atomic,
-    now_iso
-)
-
-
+from __future__ import annotations
+from dataclasses import dataclass,asdict
+import os,re
+from .utils import read_json,write_json_atomic,now_iso
 @dataclass
 class Topic:
-
-    id: str
-    title: str
-    category: str
-    region: str
-    period: str = ""
-    description: str = ""
-    aliases: list = None
-    used: bool = False
-
-    def __post_init__(self):
-
-        self.aliases = (
-            self.aliases or []
-        )
-
-    def to_dict(self):
-
-        return asdict(self)
-
-
+    id:str; title:str; category:str; region:str; period:str=''; description:str=''; aliases:list=None; used:bool=False
+    def __post_init__(self): self.aliases=self.aliases or []
+    def to_dict(self): return asdict(self)
 def load_topics(paths):
-
-    return [
-        Topic(**item)
-        for item in read_json(
-            paths.topics_json,
-            []
-        )
-        if isinstance(
-            item,
-            dict
-        )
-    ]
-
-
+    out=[]
+    for x in read_json(paths.topics_json,[]) or []:
+        if isinstance(x,dict):
+            try: out.append(Topic(**x))
+            except TypeError: pass
+    return out
 def _next_job_id(paths):
-
-    root = paths(
-        "02_JOBS"
-    )
-
-    numbers = []
-
-    if os.path.isdir(root):
-
-        for name in os.listdir(root):
-
-            if not name.startswith(
-                "BH"
-            ):
-                continue
-
-            try:
-
-                numbers.append(
-                    int(name[2:])
-                )
-
-            except ValueError:
-                pass
-
-
-    return (
-        f"BH{max(numbers, default=0) + 1:06d}"
-    )
-
-
-def _job_status(
-    paths,
-    job_id
-):
-
-    state = read_json(
-        paths.state(
-            job_id,
-            "qwen"
-        ),
-        {}
-    ) or {}
-
-    return str(
-        state.get(
-            "status",
-            ""
-        )
-    ).upper()
-
-
-def claim_next_topic(
-    paths,
-    processor="qwen"
-):
-
-    topics = load_topics(paths)
-
-    root = paths(
-        "02_JOBS"
-    )
-
-    claimed_topics = set()
-
-
-    if os.path.isdir(root):
-
-        for job_id in os.listdir(root):
-
-            if not job_id.startswith(
-                "BH"
-            ):
-                continue
-
-
-            manifest = read_json(
-                paths.manifest(job_id),
-                {}
-            ) or {}
-
-
-            topic_id = manifest.get(
-                "topic_id"
-            )
-
-
-            if not topic_id:
-                continue
-
-
-            status = str(
-                manifest.get(
-                    "status",
-                    ""
-                )
-            ).upper()
-
-
-            # These jobs are still associated
-            # with their topic.
-            if status not in {
-                "FAILED",
-                "QWEN_ERROR",
-                "REJECTED",
-                "ABANDONED"
-            }:
-
-                claimed_topics.add(
-                    topic_id
-                )
-
-
-    for topic in topics:
-
-        if topic.used:
-            continue
-
-        if topic.id in claimed_topics:
-            continue
-
-
-        job_id = _next_job_id(
-            paths
-        )
-
-
-        # IMPORTANT:
-        # DrivePaths.job() accepts ONE argument.
-        job_root = paths.job(
-            job_id
-        )
-
-
-        os.makedirs(
-            job_root,
-            exist_ok=True
-        )
-
-
-        os.makedirs(
-            os.path.join(
-                job_root,
-                "state"
-            ),
-            exist_ok=True
-        )
-
-
-        write_json_atomic(
-            paths.manifest(job_id),
-            {
-                "job_id": job_id,
-                "topic_id": topic.id,
-                "title": topic.title,
-                "created_at": now_iso(),
-                "claimed_by": processor,
-                "status": "QWEN_RESEARCHING"
-            }
-        )
-
-
-        write_json_atomic(
-            paths.state(
-                job_id,
-                "qwen"
-            ),
-            {
-                "status": "CLAIMED",
-                "processor": processor,
-                "job_id": job_id,
-                "updated_at": now_iso()
-            }
-        )
-
-
-        return topic, job_id
-
-
-    return None, None
-
-
-def mark_used(
-    paths,
-    topic
-):
-
-    used = read_json(
-        paths.used_topics_json,
-        []
-    ) or []
-
-
-    if not any(
-        item.get("id") == topic.id
-        for item in used
-    ):
-
-        used.append(
-            topic.to_dict()
-        )
-
-
-    write_json_atomic(
-        paths.used_topics_json,
-        used
-    )
-
-
-    topics = load_topics(
-        paths
-    )
-
-
-    for item in topics:
-
-        if item.id == topic.id:
-
-            item.used = True
-
-
-    write_json_atomic(
-        paths.topics_json,
-        [
-            item.to_dict()
-            for item in topics
-        ]
-    )
+    nums=[]
+    for n in os.listdir(paths('02_JOBS')) if os.path.isdir(paths('02_JOBS')) else []:
+        m=re.fullmatch(r'BH(\d+)',n)
+        if m: nums.append(int(m.group(1)))
+    return f'BH{max(nums,default=0)+1:06d}'
+def find_resumable_job(paths):
+    topics={t.id:t for t in load_topics(paths)}
+    for jid in sorted(os.listdir(paths('02_JOBS'))) if os.path.isdir(paths('02_JOBS')) else []:
+        if not jid.startswith('BH'): continue
+        m=read_json(paths.manifest(jid),{}) or {}; st=(read_json(paths.state(jid,'qwen'),{}) or {}).get('status','')
+        if m.get('claimed_by')=='qwen' and st not in {'QWEN_READY','COMPLETED','FAILED','REJECTED'} and m.get('topic_id') in topics:
+            return topics[m['topic_id']],jid
+    return None,None
+def claim_next_topic(paths):
+    claimed=set()
+    for jid in os.listdir(paths('02_JOBS')) if os.path.isdir(paths('02_JOBS')) else []:
+        m=read_json(paths.manifest(jid),{}) or {}; st=(read_json(paths.state(jid,'qwen'),{}) or {}).get('status','')
+        if m.get('topic_id') and st not in {'FAILED','REJECTED'}: claimed.add(m['topic_id'])
+    for topic in load_topics(paths):
+        if topic.used or topic.id in claimed: continue
+        jid=_next_job_id(paths); os.makedirs(paths.job(jid),exist_ok=True); os.makedirs(os.path.join(paths.job(jid),'state'),exist_ok=True)
+        write_json_atomic(paths.manifest(jid),{"job_id":jid,"topic_id":topic.id,"title":topic.title,"category":topic.category,"region":topic.region,"period":topic.period,"claimed_by":"qwen","created_at":now_iso(),"status":"QWEN_RESEARCHING"})
+        write_json_atomic(paths.state(jid,'qwen'),{"status":"CLAIMED","processor":"qwen","updated_at":now_iso()})
+        return topic,jid
+    return None,None
+def update_status(paths,jid,status,**extra):
+    m=read_json(paths.manifest(jid),{}) or {}; m.update(status=status,updated_at=now_iso(),**extra); write_json_atomic(paths.manifest(jid),m)
+    write_json_atomic(paths.state(jid,'qwen'),{"status":status,"processor":"qwen","updated_at":now_iso(),**extra})
+def mark_used(paths,topic):
+    used=read_json(paths.used_topics_json,[]) or []
+    if not any(x.get('id')==topic.id for x in used): used.append(topic.to_dict())
+    write_json_atomic(paths.used_topics_json,used)
+    topics=load_topics(paths)
+    for t in topics:
+        if t.id==topic.id:t.used=True
+    write_json_atomic(paths.topics_json,[t.to_dict() for t in topics])
