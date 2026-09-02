@@ -1,308 +1,433 @@
-import json
 import re
 
 from factory.utils import write_json_atomic
 
 
 # ============================================================
-# SCENE CONFIGURATION
+# CONFIGURATION
 # ============================================================
 
-TARGET_SCENES = 20
 MIN_SCENES = 18
+TARGET_SCENES = 20
 MAX_SCENES = 22
 
 MIN_SCENE_WORDS = 4
 MAX_SCENE_WORDS = 14
 
-SEGMENT_ATTEMPTS = 4
 VISUAL_ATTEMPTS = 3
 
 
 # ============================================================
-# TEXT UTILITIES
+# WORD / TEXT UTILITIES
 # ============================================================
 
+def words(text):
+    return re.findall(r"\b[\w’'-]+\b", str(text))
+
+
 def count_words(text):
-    """
-    Consistent word counter used throughout the scene engine.
-    """
-    return len(re.findall(r"\b[\w’'-]+\b", str(text)))
+    return len(words(text))
 
 
-def clean_text(text):
-    """
-    Clean model output without changing its meaning.
-    """
-    text = str(text).strip()
-
-    # Remove markdown/code fences.
-    text = re.sub(r"```(?:text|json)?", "", text, flags=re.IGNORECASE)
-    text = text.replace("```", "")
-
-    # Remove accidental scene labels.
-    text = re.sub(
-        r"^\s*(?:scene\s*)?\d+\s*[:.)-]\s*",
-        "",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    return text.strip()
-
-
-def normalize_text(text):
+def normalize(text):
     text = str(text).lower()
     text = re.sub(r"[^\w\s]", "", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
 
-def similar(a, b):
-    """
-    Detect obvious repeated/near-repeated scene narration.
-    """
-    a_words = set(normalize_text(a).split())
-    b_words = set(normalize_text(b).split())
-
-    if not a_words or not b_words:
-        return False
-
-    overlap = len(a_words & b_words)
-    smaller = min(len(a_words), len(b_words))
-
-    return (overlap / smaller) >= 0.75
-
-
 # ============================================================
-# SEGMENTATION
+# SENTENCE SPLITTING
 # ============================================================
 
-def segmentation_prompt(narration):
+def split_sentences(text):
     """
-    Ask Qwen ONLY to divide the existing narration.
-
-    No JSON.
-    No visual descriptions.
-    No rewriting.
+    Split narration into sentences while preserving the original
+    wording as much as possible.
     """
 
-    return f"""
-You are dividing an existing documentary narration into short
-consecutive narration segments.
+    text = re.sub(r"\s+", " ", str(text)).strip()
 
-DO NOT write a new narration.
-
-DO NOT summarize.
-
-DO NOT add information.
-
-DO NOT remove information.
-
-DO NOT change the wording unnecessarily.
-
-Simply divide the original narration into approximately {TARGET_SCENES}
-consecutive pieces.
-
-Requirements:
-
-- Target: {TARGET_SCENES} segments
-- Acceptable: {MIN_SCENES}-{MAX_SCENES} segments
-- Every segment must contain {MIN_SCENE_WORDS}-{MAX_SCENE_WORDS} words.
-- Keep the original order exactly.
-- Every segment must come directly from the original narration.
-- Do not repeat information.
-- Do not create a title.
-- Do not create a source card.
-- Do not create an introduction that isn't in the narration.
-- Do not create an ending that isn't in the narration.
-
-OUTPUT FORMAT:
-
-Put ONE segment on each line.
-
-Do not number the lines.
-
-Do not use bullets.
-
-Do not use JSON.
-
-ORIGINAL NARRATION:
-
-{narration}
-"""
-
-
-def correction_segmentation_prompt(narration, previous_output, error):
-    """
-    Targeted correction rather than asking the model to reinvent
-    the entire task.
-    """
-
-    return f"""
-Fix the segmentation below.
-
-ORIGINAL NARRATION:
-{narration}
-
-PREVIOUS SEGMENTATION:
-{previous_output}
-
-PROBLEM:
-{error}
-
-Create a corrected segmentation.
-
-Rules:
-
-- Target exactly {TARGET_SCENES} segments.
-- Acceptable range: {MIN_SCENES}-{MAX_SCENES}.
-- Each segment must contain {MIN_SCENE_WORDS}-{MAX_SCENE_WORDS} words.
-- Preserve the original narration and its order.
-- Do not rewrite the story.
-- Do not add information.
-- Do not remove information.
-- Do not repeat information.
-- Do not number the lines.
-- Do not use bullets.
-- Do not use JSON.
-
-ONE SEGMENT PER LINE.
-"""
-
-
-def parse_segments(raw):
-    """
-    Convert plain-text Qwen output into a Python list.
-
-    Handles common model formatting mistakes.
-    """
-
-    raw = str(raw).strip()
-
-    # Remove markdown fences.
-    raw = re.sub(
-        r"```(?:text|txt|json)?",
-        "",
-        raw,
-        flags=re.IGNORECASE
+    # Split after normal sentence punctuation.
+    sentences = re.split(
+        r"(?<=[.!?])\s+",
+        text
     )
-    raw = raw.replace("```", "")
 
-    lines = []
+    return [
+        s.strip()
+        for s in sentences
+        if s.strip()
+    ]
 
-    for line in raw.splitlines():
 
-        line = line.strip()
+# ============================================================
+# DETERMINISTIC SEGMENTATION
+# ============================================================
 
-        if not line:
+def segment_narration(narration):
+    """
+    Deterministically divide the narration into approximately
+    18–22 short visual beats.
+
+    Qwen is NOT involved here.
+    """
+
+    sentences = split_sentences(narration)
+
+    if not sentences:
+        raise ValueError("Narration is empty.")
+
+    total_words = count_words(narration)
+
+    # Choose scene count based on narration length.
+    if total_words <= 174:
+        target = 18
+    elif total_words <= 184:
+        target = 19
+    elif total_words <= 202:
+        target = 20
+    elif total_words <= 212:
+        target = 21
+    else:
+        target = 22
+
+    target = max(MIN_SCENES, min(MAX_SCENES, target))
+
+    print(
+        f"[SCENES] NARRATION: {total_words} words | "
+        f"TARGET: {target} scenes"
+    )
+
+    # --------------------------------------------------------
+    # First attempt: split naturally by sentences.
+    # --------------------------------------------------------
+
+    chunks = []
+
+    for sentence in sentences:
+
+        sentence_words = count_words(sentence)
+
+        if sentence_words <= MAX_SCENE_WORDS:
+            chunks.append(sentence)
             continue
 
-        # Remove bullets.
-        line = re.sub(r"^[-*•]\s*", "", line)
-
-        # Remove numbered labels.
-        line = re.sub(
-            r"^\s*(?:scene\s*)?\d+\s*[:.)-]\s*",
-            "",
-            line,
-            flags=re.IGNORECASE
+        # Long sentence: split into word groups at punctuation /
+        # conjunction boundaries where possible.
+        chunks.extend(
+            split_long_sentence(sentence)
         )
 
-        line = line.strip()
+    # --------------------------------------------------------
+    # If we have too few chunks, split the longest chunks.
+    # --------------------------------------------------------
 
-        if line:
-            lines.append(line)
+    while len(chunks) < target:
 
-    return lines
+        index = find_longest_splittable_chunk(chunks)
 
+        if index is None:
+            break
+
+        original = chunks.pop(index)
+
+        pieces = split_chunk(original)
+
+        if len(pieces) <= 1:
+            chunks.insert(index, original)
+            break
+
+        for piece in reversed(pieces):
+            chunks.insert(index, piece)
+
+    # --------------------------------------------------------
+    # If we have too many chunks, merge neighboring chunks.
+    # --------------------------------------------------------
+
+    while len(chunks) > target:
+
+        index = find_best_merge(chunks)
+
+        if index is None:
+            break
+
+        merged = (
+            chunks[index].rstrip()
+            + " "
+            + chunks[index + 1].lstrip()
+        )
+
+        chunks[index:index + 2] = [merged]
+
+    # --------------------------------------------------------
+    # Final cleanup.
+    # --------------------------------------------------------
+
+    chunks = [c.strip() for c in chunks if c.strip()]
+
+    # If a chunk is still too long, split it.
+    final_chunks = []
+
+    for chunk in chunks:
+
+        if count_words(chunk) <= MAX_SCENE_WORDS:
+            final_chunks.append(chunk)
+        else:
+            final_chunks.extend(
+                split_chunk(chunk)
+            )
+
+    chunks = final_chunks
+
+    # Final merge if splitting pushed us above target.
+    while len(chunks) > MAX_SCENES:
+
+        index = find_best_merge(chunks)
+
+        if index is None:
+            break
+
+        merged = (
+            chunks[index].rstrip()
+            + " "
+            + chunks[index + 1].lstrip()
+        )
+
+        chunks[index:index + 2] = [merged]
+
+    # --------------------------------------------------------
+    # Validate.
+    # --------------------------------------------------------
+
+    valid, error = validate_segments(chunks)
+
+    if not valid:
+        raise ValueError(
+            f"Deterministic segmentation failed: {error}"
+        )
+
+    return chunks
+
+
+def split_long_sentence(sentence):
+    """
+    Split a long sentence using natural punctuation/conjunctions.
+    """
+
+    # First try commas, semicolons and conjunctions.
+    pieces = re.split(
+        r"(?<=[,;:])\s+|"
+        r"\s+(?=(?:and|but|while|because|after|before|"
+        r"when|where|which|who|as|then)\s+)",
+        sentence,
+        flags=re.IGNORECASE
+    )
+
+    pieces = [
+        p.strip(" ,;:")
+        for p in pieces
+        if p.strip(" ,;:")
+    ]
+
+    # If natural splitting worked, recursively split anything
+    # still too long.
+    result = []
+
+    for piece in pieces:
+
+        if count_words(piece) <= MAX_SCENE_WORDS:
+            result.append(piece)
+        else:
+            result.extend(
+                split_chunk(piece)
+            )
+
+    return result
+
+
+def split_chunk(text):
+    """
+    Hard fallback: split a chunk into <=14-word pieces.
+
+    Attempts to keep pieces around 8–10 words.
+    """
+
+    tokens = text.split()
+
+    if len(tokens) <= MAX_SCENE_WORDS:
+        return [text.strip()]
+
+    pieces = []
+
+    # Aim for approximately 8–10 words per scene.
+    target_size = 9
+
+    current = []
+
+    for token in tokens:
+
+        current.append(token)
+
+        if len(current) >= target_size:
+
+            pieces.append(
+                " ".join(current).strip()
+            )
+
+            current = []
+
+    if current:
+        pieces.append(
+            " ".join(current).strip()
+        )
+
+    # If the final piece is too short, merge it backward.
+    if len(pieces) >= 2:
+
+        if count_words(pieces[-1]) < MIN_SCENE_WORDS:
+
+            pieces[-2] = (
+                pieces[-2]
+                + " "
+                + pieces[-1]
+            )
+
+            pieces.pop()
+
+    return pieces
+
+
+def find_longest_splittable_chunk(chunks):
+
+    candidates = []
+
+    for i, chunk in enumerate(chunks):
+
+        wc = count_words(chunk)
+
+        if wc >= 2 * MIN_SCENE_WORDS:
+            candidates.append((wc, i))
+
+    if not candidates:
+        return None
+
+    candidates.sort(reverse=True)
+
+    return candidates[0][1]
+
+
+def find_best_merge(chunks):
+    """
+    Find neighboring chunks whose combined length is still
+    within the maximum scene size.
+    """
+
+    candidates = []
+
+    for i in range(len(chunks) - 1):
+
+        combined_words = (
+            count_words(chunks[i])
+            + count_words(chunks[i + 1])
+        )
+
+        if combined_words <= MAX_SCENE_WORDS:
+
+            # Prefer balanced/short combinations.
+            candidates.append(
+                (
+                    abs(combined_words - 10),
+                    i
+                )
+            )
+
+    if not candidates:
+        return None
+
+    candidates.sort()
+
+    return candidates[0][1]
+
+
+# ============================================================
+# VALIDATION
+# ============================================================
 
 def validate_segments(segments):
-    """
-    Validate segmentation independently from visual generation.
-    """
 
-    if not isinstance(segments, list):
-        return False, "segments is not a list"
+    if not segments:
+        return False, "no segments"
 
-    count = len(segments)
+    if len(segments) < MIN_SCENES:
+        return False, (
+            f"only {len(segments)} scenes; "
+            f"minimum is {MIN_SCENES}"
+        )
 
-    if count < MIN_SCENES or count > MAX_SCENES:
-        return False, f"invalid segment count: {count}"
+    if len(segments) > MAX_SCENES:
+        return False, (
+            f"{len(segments)} scenes; "
+            f"maximum is {MAX_SCENES}"
+        )
 
-    normalized_seen = []
+    seen = set()
 
-    for index, segment in enumerate(segments, start=1):
+    for i, segment in enumerate(segments, start=1):
 
-        words = count_words(segment)
+        wc = count_words(segment)
 
-        if words < MIN_SCENE_WORDS:
+        if wc < MIN_SCENE_WORDS:
             return False, (
-                f"segment {index} too short: "
-                f"{words} words"
+                f"scene {i} too short: {wc} words"
             )
 
-        if words > MAX_SCENE_WORDS:
+        if wc > MAX_SCENE_WORDS:
             return False, (
-                f"segment {index} too long: "
-                f"{words} words"
+                f"scene {i} too long: {wc} words"
             )
 
-        normalized = normalize_text(segment)
+        key = normalize(segment)
 
-        if normalized in normalized_seen:
+        if key in seen:
             return False, (
-                f"duplicate segment at position {index}"
+                f"duplicate narration in scene {i}"
             )
 
-        for previous in normalized_seen:
-            if similar(segment, previous):
-                return False, (
-                    f"near-duplicate segment at position {index}"
-                )
-
-        normalized_seen.append(normalized)
+        seen.add(key)
 
     return True, "valid"
 
 
 # ============================================================
-# VISUAL DESCRIPTION GENERATION
+# VISUAL DESCRIPTION PROMPT
 # ============================================================
 
-def visual_prompt(segment, visual_bible, scene_number):
+def visual_prompt(
+    scene_number,
+    scene_narration,
+    visual_bible
+):
 
     return f"""
-Create a cinematic visual description for scene {scene_number} of a
-historical documentary.
+You are creating ONE visual description for a historical
+documentary scene.
 
-IMPORTANT:
-
-The narration below is already final.
-
-Do NOT rewrite it.
-
-Do NOT explain the narration.
-
-Do NOT add dialogue.
-
-Do NOT mention the narrator.
-
-Describe ONLY what should be visible on screen.
-
-The visual must directly represent the narration.
+SCENE NUMBER:
+{scene_number}
 
 NARRATION:
-
-{segment}
+{scene_narration}
 
 VISUAL BIBLE:
-
 {visual_bible}
 
-Create ONE concise but detailed visual description.
+Describe exactly what should be visible on screen for this
+narration.
 
-Include useful visual information such as:
+The image should directly communicate the narration.
+
+Include useful visual details such as:
 
 - people
 - clothing
@@ -313,278 +438,249 @@ Include useful visual information such as:
 - historical setting
 - lighting
 - atmosphere
-- camera/composition
+- camera composition
+- scale and depth
 
-Keep the scene historically plausible.
+Maintain historical plausibility.
 
-Avoid modern objects unless the narration specifically requires them.
+Use the established visual bible consistently.
 
-Do not write a list.
+STYLE:
+Cinematic 3D historical reconstruction,
+high-end game cinematic,
+Unreal Engine style,
+physically plausible materials,
+period-authentic details,
+dramatic natural lighting,
+volumetric atmosphere,
+strong depth,
+detailed environments,
+realistic textures,
+realistic proportions,
+cinematic composition.
 
-Do not use JSON.
+Do not:
+
+- rewrite the narration
+- add narration
+- create dialogue
+- mention the narrator
+- create a source card
+- mention modern objects unless historically appropriate
+- use bullet points
+- use JSON
 
 Return ONLY the visual description.
 """
 
 
-def clean_visual_description(text):
-    """
-    Clean visual output.
-    """
-
-    text = str(text).strip()
-
-    text = re.sub(
-        r"```(?:text)?",
-        "",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    text = text.replace("```", "")
-
-    # Remove accidental prefixes.
-    text = re.sub(
-        r"^\s*(?:visual\s*description|description)\s*:\s*",
-        "",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    return text.strip()
-
-
 # ============================================================
-# BUILD FINAL SCENE
+# VISUAL DESCRIPTION GENERATION
 # ============================================================
 
-def build_scene(scene_number, narration, visual_description):
+def generate_visual(
+    qwen,
+    job_id,
+    scene_number,
+    narration,
+    visual_bible
+):
 
-    return {
-        "scene_number": scene_number,
-        "narration": narration,
-        "visual_description": visual_description
-    }
+    for attempt in range(1, VISUAL_ATTEMPTS + 1):
 
-
-# ============================================================
-# MAIN PIPELINE
-# ============================================================
-
-def run(paths, job_id, narration, visual_bible, config, qwen):
-
-    print(
-        f"[SCENES] {job_id} | "
-        f"TARGET: ~{TARGET_SCENES} scenes | "
-        f"acceptable: {MIN_SCENES}-{MAX_SCENES}"
-    )
-
-    # ========================================================
-    # STAGE 1 — SEGMENT NARRATION
-    # ========================================================
-
-    print(
-        f"[SCENES] {job_id} | "
-        f"STAGE 1/2 | segmenting narration"
-    )
-
-    segments = None
-    previous_output = None
-    last_error = None
-
-    for attempt in range(1, SEGMENT_ATTEMPTS + 1):
-
-        if attempt == 1:
-
-            print(
-                f"[SCENES] {job_id} | "
-                f"SEGMENT ATTEMPT {attempt}/{SEGMENT_ATTEMPTS}"
-            )
-
-            prompt = segmentation_prompt(narration)
-
-        else:
-
-            print(
-                f"[SCENES] {job_id} | "
-                f"SEGMENT ATTEMPT {attempt}/{SEGMENT_ATTEMPTS} | "
-                f"correcting: {last_error}"
-            )
-
-            prompt = correction_segmentation_prompt(
-                narration,
-                previous_output,
-                last_error
-            )
+        print(
+            f"[SCENES] {job_id} | "
+            f"SCENE {scene_number} | "
+            f"VISUAL ATTEMPT {attempt}/{VISUAL_ATTEMPTS}"
+        )
 
         try:
 
             raw = qwen.generate(
-                prompt,
-                max_new_tokens=700,
-                temperature=0.25
+                visual_prompt(
+                    scene_number,
+                    narration,
+                    visual_bible
+                ),
+                max_new_tokens=450,
+                temperature=0.35
             )
 
-            previous_output = raw
+            visual = str(raw).strip()
 
-            parsed = parse_segments(raw)
+            # Remove markdown fences.
+            visual = re.sub(
+                r"```(?:text)?",
+                "",
+                visual,
+                flags=re.IGNORECASE
+            )
 
-            valid, error = validate_segments(parsed)
+            visual = visual.replace("```", "").strip()
 
-            if not valid:
+            # Remove accidental label.
+            visual = re.sub(
+                r"^(?:visual description|description)\s*:\s*",
+                "",
+                visual,
+                flags=re.IGNORECASE
+            )
 
-                last_error = error
+            if count_words(visual) < 8:
 
                 print(
                     f"[SCENES] {job_id} | "
-                    f"Invalid segmentation: {error}"
+                    f"SCENE {scene_number} | "
+                    f"visual too short"
                 )
 
                 continue
 
-            segments = parsed
-
-            print(
-                f"[SCENES] {job_id} | "
-                f"SEGMENTATION ACCEPTED | "
-                f"{len(segments)} segments"
-            )
-
-            break
+            return visual
 
         except Exception as e:
 
-            last_error = str(e)
-
             print(
                 f"[SCENES] {job_id} | "
-                f"Segmentation error: {last_error}"
+                f"SCENE {scene_number} | "
+                f"visual error: {e}"
             )
 
-    if segments is None:
+    raise RuntimeError(
+        f"Could not generate visual description "
+        f"for scene {scene_number}"
+    )
 
-        raise RuntimeError(
-            f"Scene segmentation failed after "
-            f"{SEGMENT_ATTEMPTS} attempts. "
-            f"Last error: {last_error}"
-        )
+
+# ============================================================
+# MAIN RUNNER
+# ============================================================
+
+def run(
+    paths,
+    job_id,
+    narration,
+    visual_bible,
+    config,
+    qwen
+):
+
+    print(
+        f"[SCENES] {job_id} | "
+        f"STAGE: SCENE_PLANNING"
+    )
 
     # ========================================================
-    # STAGE 2 — VISUAL DESCRIPTIONS
+    # STEP 1
+    # Python segments narration.
     # ========================================================
 
     print(
         f"[SCENES] {job_id} | "
-        f"STAGE 2/2 | generating visual descriptions"
+        f"STEP 1/2 | deterministic narration segmentation"
+    )
+
+    segments = segment_narration(narration)
+
+    print(
+        f"[SCENES] {job_id} | "
+        f"SEGMENTATION COMPLETE | "
+        f"{len(segments)} scenes"
+    )
+
+    for i, segment in enumerate(segments, start=1):
+
+        print(
+            f"[SCENES] {job_id} | "
+            f"SCENE {i:02d} | "
+            f"{count_words(segment)} words | "
+            f"{segment}"
+        )
+
+    # ========================================================
+    # STEP 2
+    # Qwen creates ONLY visual descriptions.
+    # ========================================================
+
+    print(
+        f"[SCENES] {job_id} | "
+        f"STEP 2/2 | generating visual descriptions"
     )
 
     scenes = []
 
-    for index, segment in enumerate(segments, start=1):
+    for scene_number, segment in enumerate(
+        segments,
+        start=1
+    ):
 
-        print(
-            f"[SCENES] {job_id} | "
-            f"SCENE {index}/{len(segments)} | "
-            f"generating visual description"
+        visual_description = generate_visual(
+            qwen=qwen,
+            job_id=job_id,
+            scene_number=scene_number,
+            narration=segment,
+            visual_bible=visual_bible
         )
-
-        visual_description = None
-        last_visual_error = None
-
-        for attempt in range(1, VISUAL_ATTEMPTS + 1):
-
-            try:
-
-                prompt = visual_prompt(
-                    segment,
-                    visual_bible,
-                    index
-                )
-
-                raw_visual = qwen.generate(
-                    prompt,
-                    max_new_tokens=450,
-                    temperature=0.35
-                )
-
-                visual_description = clean_visual_description(
-                    raw_visual
-                )
-
-                if not visual_description:
-
-                    last_visual_error = (
-                        "empty visual description"
-                    )
-
-                    continue
-
-                # Reject obvious model failures.
-                if len(visual_description.split()) < 8:
-
-                    last_visual_error = (
-                        "visual description too short"
-                    )
-
-                    visual_description = None
-                    continue
-
-                break
-
-            except Exception as e:
-
-                last_visual_error = str(e)
-
-        if visual_description is None:
-
-            raise RuntimeError(
-                f"Visual generation failed for "
-                f"scene {index}: "
-                f"{last_visual_error}"
-            )
 
         scenes.append(
-            build_scene(
-                scene_number=index,
-                narration=segment,
-                visual_description=visual_description
-            )
+            {
+                "scene_number": scene_number,
+                "narration": segment,
+                "visual_description": visual_description
+            }
         )
 
         print(
             f"[SCENES] {job_id} | "
-            f"SCENE {index}/{len(segments)} | "
-            f"visual description ready"
+            f"SCENE {scene_number}/{len(segments)} | "
+            f"READY"
         )
 
     # ========================================================
     # FINAL VALIDATION
     # ========================================================
 
+    final_narration_words = sum(
+        count_words(scene["narration"])
+        for scene in scenes
+    )
+
+    original_narration_words = count_words(narration)
+
+    print(
+        f"[SCENES] {job_id} | "
+        f"ORIGINAL WORDS: {original_narration_words}"
+    )
+
+    print(
+        f"[SCENES] {job_id} | "
+        f"SCENE WORDS: {final_narration_words}"
+    )
+
     if len(scenes) < MIN_SCENES:
         raise RuntimeError(
-            f"Too few scenes generated: {len(scenes)}"
+            f"Too few scenes: {len(scenes)}"
         )
 
     if len(scenes) > MAX_SCENES:
         raise RuntimeError(
-            f"Too many scenes generated: {len(scenes)}"
+            f"Too many scenes: {len(scenes)}"
         )
 
     for scene in scenes:
 
-        words = count_words(scene["narration"])
+        wc = count_words(scene["narration"])
 
-        if words < MIN_SCENE_WORDS:
+        if wc < MIN_SCENE_WORDS:
             raise RuntimeError(
                 f"Scene {scene['scene_number']} "
-                f"has only {words} words"
+                f"is too short: {wc} words"
             )
 
-        if words > MAX_SCENE_WORDS:
+        if wc > MAX_SCENE_WORDS:
             raise RuntimeError(
                 f"Scene {scene['scene_number']} "
-                f"has {words} words"
+                f"is too long: {wc} words"
             )
 
     # ========================================================
