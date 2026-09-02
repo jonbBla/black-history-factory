@@ -1,713 +1,523 @@
 import re
-
-from factory.utils import write_json_atomic
+from pathlib import Path
 
 
 # ============================================================
-# CONFIGURATION
+# NARRATION → SCENE SEGMENTATION
 # ============================================================
-
-MIN_SCENES = 18
-TARGET_SCENES = 20
-MAX_SCENES = 22
 
 MIN_SCENE_WORDS = 4
 MAX_SCENE_WORDS = 14
 
-VISUAL_ATTEMPTS = 3
+
+def word_count(text: str) -> int:
+    return len(re.findall(r"\b[\w’'-]+\b", text))
 
 
-# ============================================================
-# WORD / TEXT UTILITIES
-# ============================================================
-
-def words(text):
-    return re.findall(r"\b[\w’'-]+\b", str(text))
+def normalize_text(text: str) -> str:
+    """Clean whitespace without changing the actual wording."""
+    return re.sub(r"\s+", " ", text).strip()
 
 
-def count_words(text):
-    return len(words(text))
-
-
-def normalize(text):
-    text = str(text).lower()
-    text = re.sub(r"[^\w\s]", "", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
-
-# ============================================================
-# SENTENCE SPLITTING
-# ============================================================
-
-def split_sentences(text):
+def tokenize_words(text: str):
     """
-    Split narration into sentences while preserving the original
-    wording as much as possible.
+    Return words while preserving punctuation attached to them.
+
+    Example:
+        'The kingdom rose, powerful and wealthy.'
+    becomes:
+        ['The', 'kingdom', 'rose,', 'powerful', 'and', 'wealthy.']
+    """
+    return re.findall(r"\S+", normalize_text(text))
+
+
+def punctuation_score(token: str) -> int:
+    """
+    Higher score = better/natural place to end a scene.
     """
 
-    text = re.sub(r"\s+", " ", str(text)).strip()
+    token = token.rstrip('"”’)]}')
 
-    # Split after normal sentence punctuation.
-    sentences = re.split(
-        r"(?<=[.!?])\s+",
-        text
+    if token.endswith((".", "!", "?")):
+        return 100
+
+    if token.endswith(";"):
+        return 85
+
+    if token.endswith(":"):
+        return 70
+
+    if token.endswith(","):
+        return 45
+
+    return 0
+
+
+def connector_score(token: str) -> int:
+    """
+    Natural linguistic transition points.
+    """
+
+    word = re.sub(r"[^\w’'-]", "", token).lower()
+
+    connectors = {
+        "and",
+        "but",
+        "while",
+        "because",
+        "although",
+        "where",
+        "when",
+        "as",
+        "yet",
+        "so",
+        "then",
+        "which",
+        "who",
+        "whose",
+    }
+
+    return 20 if word in connectors else 0
+
+
+def boundary_score(tokens, position):
+    """
+    Score a possible boundary after tokens[position - 1].
+    """
+
+    if position <= 0 or position > len(tokens):
+        return -9999
+
+    token = tokens[position - 1]
+
+    score = punctuation_score(token)
+
+    # Avoid ending immediately before a connector.
+    if position < len(tokens):
+        next_word = re.sub(
+            r"[^\w’'-]",
+            "",
+            tokens[position]
+        ).lower()
+
+        if next_word in {
+            "and",
+            "but",
+            "because",
+            "while",
+            "although",
+            "when",
+            "where",
+            "which",
+            "who",
+        }:
+            score -= 15
+
+    # Connector after the boundary is usually less natural.
+    score += connector_score(token)
+
+    return score
+
+
+def choose_scene_count(total_words: int) -> int:
+    """
+    Choose between 18–22 scenes.
+
+    Approximately 8–12 words per scene is preferred,
+    while never exceeding 14 words.
+    """
+
+    if total_words <= 150:
+        return 18
+
+    if total_words <= 175:
+        return 19
+
+    if total_words <= 195:
+        return 20
+
+    if total_words <= 215:
+        return 21
+
+    return 22
+
+
+def segment_narration(narration: str):
+    """
+    Deterministically divide narration into natural scenes.
+
+    Rules:
+      - 18–22 scenes
+      - minimum 4 words
+      - maximum 14 words
+      - strongly prefers sentence endings
+      - then semicolons/colons
+      - then commas
+      - then natural connectors
+      - arbitrary word splitting only as a last resort
+
+    IMPORTANT:
+      The narration wording itself is NOT rewritten.
+    """
+
+    narration = normalize_text(narration)
+    tokens = tokenize_words(narration)
+
+    total = len(tokens)
+
+    if total < MIN_SCENE_WORDS:
+        raise ValueError(
+            f"Narration too short: {total} words."
+        )
+
+    target_scenes = choose_scene_count(total)
+
+    # Make sure the requested number of scenes is mathematically possible.
+    minimum_possible = (total + MAX_SCENE_WORDS - 1) // MAX_SCENE_WORDS
+    maximum_possible = total // MIN_SCENE_WORDS
+
+    target_scenes = max(
+        target_scenes,
+        minimum_possible
     )
 
-    return [
-        s.strip()
-        for s in sentences
-        if s.strip()
-    ]
+    target_scenes = min(
+        target_scenes,
+        maximum_possible
+    )
 
-
-# ============================================================
-# DETERMINISTIC SEGMENTATION
-# ============================================================
-
-def segment_narration(narration):
-    """
-    Deterministically divide the narration into approximately
-    18–22 short visual beats.
-
-    Qwen is NOT involved here.
-    """
-
-    sentences = split_sentences(narration)
-
-    if not sentences:
-        raise ValueError("Narration is empty.")
-
-    total_words = count_words(narration)
-
-    # Choose scene count based on narration length.
-    if total_words <= 174:
-        target = 18
-    elif total_words <= 184:
-        target = 19
-    elif total_words <= 202:
-        target = 20
-    elif total_words <= 212:
-        target = 21
-    else:
-        target = 22
-
-    target = max(MIN_SCENES, min(MAX_SCENES, target))
+    target_words = total / target_scenes
 
     print(
-        f"[SCENES] NARRATION: {total_words} words | "
-        f"TARGET: {target} scenes"
+        f"[SCENES] NARRATION: {total} words | "
+        f"TARGET: {target_scenes} scenes | "
+        f"AVG: {target_words:.1f} words"
     )
 
     # --------------------------------------------------------
-    # First attempt: split naturally by sentences.
+    # Dynamic programming.
+    #
+    # dp[i][k] = best cost for splitting first i words
+    # into k scenes.
     # --------------------------------------------------------
 
-    chunks = []
+    INF = float("inf")
 
-    for sentence in sentences:
-
-        sentence_words = count_words(sentence)
-
-        if sentence_words <= MAX_SCENE_WORDS:
-            chunks.append(sentence)
-            continue
-
-        # Long sentence: split into word groups at punctuation /
-        # conjunction boundaries where possible.
-        chunks.extend(
-            split_long_sentence(sentence)
-        )
-
-    # --------------------------------------------------------
-    # If we have too few chunks, split the longest chunks.
-    # --------------------------------------------------------
-
-    while len(chunks) < target:
-
-        index = find_longest_splittable_chunk(chunks)
-
-        if index is None:
-            break
-
-        original = chunks.pop(index)
-
-        pieces = split_chunk(original)
-
-        if len(pieces) <= 1:
-            chunks.insert(index, original)
-            break
-
-        for piece in reversed(pieces):
-            chunks.insert(index, piece)
-
-    # --------------------------------------------------------
-    # If we have too many chunks, merge neighboring chunks.
-    # --------------------------------------------------------
-
-    while len(chunks) > target:
-
-        index = find_best_merge(chunks)
-
-        if index is None:
-            break
-
-        merged = (
-            chunks[index].rstrip()
-            + " "
-            + chunks[index + 1].lstrip()
-        )
-
-        chunks[index:index + 2] = [merged]
-
-    # --------------------------------------------------------
-    # Final cleanup.
-    # --------------------------------------------------------
-
-    chunks = [c.strip() for c in chunks if c.strip()]
-
-    # If a chunk is still too long, split it.
-    final_chunks = []
-
-    for chunk in chunks:
-
-        if count_words(chunk) <= MAX_SCENE_WORDS:
-            final_chunks.append(chunk)
-        else:
-            final_chunks.extend(
-                split_chunk(chunk)
-            )
-
-    chunks = final_chunks
-
-    # Final merge if splitting pushed us above target.
-    while len(chunks) > MAX_SCENES:
-
-        index = find_best_merge(chunks)
-
-        if index is None:
-            break
-
-        merged = (
-            chunks[index].rstrip()
-            + " "
-            + chunks[index + 1].lstrip()
-        )
-
-        chunks[index:index + 2] = [merged]
-
-    # --------------------------------------------------------
-    # Validate.
-    # --------------------------------------------------------
-
-    valid, error = validate_segments(chunks)
-
-    if not valid:
-        raise ValueError(
-            f"Deterministic segmentation failed: {error}"
-        )
-
-    return chunks
-
-
-def split_long_sentence(sentence):
-    """
-    Split a long sentence using natural punctuation/conjunctions.
-    """
-
-    # First try commas, semicolons and conjunctions.
-    pieces = re.split(
-        r"(?<=[,;:])\s+|"
-        r"\s+(?=(?:and|but|while|because|after|before|"
-        r"when|where|which|who|as|then)\s+)",
-        sentence,
-        flags=re.IGNORECASE
-    )
-
-    pieces = [
-        p.strip(" ,;:")
-        for p in pieces
-        if p.strip(" ,;:")
+    dp = [
+        [INF] * (target_scenes + 1)
+        for _ in range(total + 1)
     ]
 
-    # If natural splitting worked, recursively split anything
-    # still too long.
-    result = []
+    previous = [
+        [None] * (target_scenes + 1)
+        for _ in range(total + 1)
+    ]
 
-    for piece in pieces:
+    dp[0][0] = 0
 
-        if count_words(piece) <= MAX_SCENE_WORDS:
-            result.append(piece)
-        else:
-            result.extend(
-                split_chunk(piece)
-            )
+    for i in range(1, total + 1):
 
-    return result
+        for k in range(1, target_scenes + 1):
 
+            # Last scene length.
+            for start in range(
+                max(0, i - MAX_SCENE_WORDS),
+                i - MIN_SCENE_WORDS + 1
+            ):
 
-def split_chunk(text):
-    """
-    Hard fallback: split a chunk into <=14-word pieces.
+                length = i - start
 
-    Attempts to keep pieces around 8–10 words.
-    """
+                if length < MIN_SCENE_WORDS:
+                    continue
 
-    tokens = text.split()
+                if length > MAX_SCENE_WORDS:
+                    continue
 
-    if len(tokens) <= MAX_SCENE_WORDS:
-        return [text.strip()]
+                if dp[start][k - 1] == INF:
+                    continue
 
-    pieces = []
+                # ------------------------------------------------
+                # Length cost.
+                #
+                # Prefer roughly 7–12 words.
+                # ------------------------------------------------
 
-    # Aim for approximately 8–10 words per scene.
-    target_size = 9
+                if length < 7:
+                    length_cost = (7 - length) ** 2 * 2
+                elif length > 12:
+                    length_cost = (length - 12) ** 2 * 2
+                else:
+                    length_cost = 0
 
-    current = []
+                # ------------------------------------------------
+                # Boundary quality.
+                # ------------------------------------------------
 
-    for token in tokens:
+                boundary = boundary_score(tokens, i)
 
-        current.append(token)
+                # Strongly reward punctuation.
+                boundary_cost = -boundary * 0.8
 
-        if len(current) >= target_size:
+                # ------------------------------------------------
+                # Penalize awkward tiny fragments.
+                # ------------------------------------------------
 
-            pieces.append(
-                " ".join(current).strip()
-            )
+                fragment_cost = 0
 
-            current = []
+                if length <= 5:
+                    fragment_cost += 8
 
-    if current:
-        pieces.append(
-            " ".join(current).strip()
-        )
+                # ------------------------------------------------
+                # Slightly discourage splitting at arbitrary words.
+                # ------------------------------------------------
 
-    # If the final piece is too short, merge it backward.
-    if len(pieces) >= 2:
+                if boundary == 0:
+                    boundary_cost += 12
 
-        if count_words(pieces[-1]) < MIN_SCENE_WORDS:
-
-            pieces[-2] = (
-                pieces[-2]
-                + " "
-                + pieces[-1]
-            )
-
-            pieces.pop()
-
-    return pieces
-
-
-def find_longest_splittable_chunk(chunks):
-
-    candidates = []
-
-    for i, chunk in enumerate(chunks):
-
-        wc = count_words(chunk)
-
-        if wc >= 2 * MIN_SCENE_WORDS:
-            candidates.append((wc, i))
-
-    if not candidates:
-        return None
-
-    candidates.sort(reverse=True)
-
-    return candidates[0][1]
-
-
-def find_best_merge(chunks):
-    """
-    Find neighboring chunks whose combined length is still
-    within the maximum scene size.
-    """
-
-    candidates = []
-
-    for i in range(len(chunks) - 1):
-
-        combined_words = (
-            count_words(chunks[i])
-            + count_words(chunks[i + 1])
-        )
-
-        if combined_words <= MAX_SCENE_WORDS:
-
-            # Prefer balanced/short combinations.
-            candidates.append(
-                (
-                    abs(combined_words - 10),
-                    i
+                cost = (
+                    dp[start][k - 1]
+                    + length_cost
+                    + boundary_cost
+                    + fragment_cost
                 )
-            )
 
-    if not candidates:
-        return None
+                if cost < dp[i][k]:
+                    dp[i][k] = cost
+                    previous[i][k] = start
 
-    candidates.sort()
+    # --------------------------------------------------------
+    # Reconstruct scenes.
+    # --------------------------------------------------------
 
-    return candidates[0][1]
-
-
-# ============================================================
-# VALIDATION
-# ============================================================
-
-def validate_segments(segments):
-
-    if not segments:
-        return False, "no segments"
-
-    if len(segments) < MIN_SCENES:
-        return False, (
-            f"only {len(segments)} scenes; "
-            f"minimum is {MIN_SCENES}"
+    if previous[total][target_scenes] is None:
+        raise ValueError(
+            "Could not find a valid narration segmentation "
+            f"for {total} words into {target_scenes} scenes."
         )
 
-    if len(segments) > MAX_SCENES:
-        return False, (
-            f"{len(segments)} scenes; "
-            f"maximum is {MAX_SCENES}"
-        )
+    boundaries = []
 
-    seen = set()
+    i = total
+    k = target_scenes
 
-    for i, segment in enumerate(segments, start=1):
+    while k > 0:
 
-        wc = count_words(segment)
+        start = previous[i][k]
 
-        if wc < MIN_SCENE_WORDS:
-            return False, (
-                f"scene {i} too short: {wc} words"
+        if start is None:
+            raise ValueError(
+                "Scene reconstruction failed."
             )
 
-        if wc > MAX_SCENE_WORDS:
-            return False, (
-                f"scene {i} too long: {wc} words"
+        boundaries.append((start, i))
+
+        i = start
+        k -= 1
+
+    boundaries.reverse()
+
+    scenes = []
+
+    for index, (start, end) in enumerate(boundaries, 1):
+
+        text = " ".join(tokens[start:end]).strip()
+        words = word_count(text)
+
+        if words < MIN_SCENE_WORDS:
+            raise ValueError(
+                f"Scene {index} too short: {words} words"
             )
 
-        key = normalize(segment)
-
-        if key in seen:
-            return False, (
-                f"duplicate narration in scene {i}"
+        if words > MAX_SCENE_WORDS:
+            raise ValueError(
+                f"Scene {index} too long: {words} words"
             )
 
-        seen.add(key)
+        scenes.append({
+            "scene_number": index,
+            "narration": text,
+            "word_count": words,
+        })
 
-    return True, "valid"
+    print(
+        f"[SCENES] Created {len(scenes)} scenes successfully."
+    )
 
+    print(
+        "[SCENES] Lengths:",
+        [s["word_count"] for s in scenes]
+    )
 
-# ============================================================
-# VISUAL DESCRIPTION PROMPT
-# ============================================================
-
-def visual_prompt(
-    scene_number,
-    scene_narration,
-    visual_bible
-):
-
-    return f"""
-You are creating ONE visual description for a historical
-documentary scene.
-
-SCENE NUMBER:
-{scene_number}
-
-NARRATION:
-{scene_narration}
-
-VISUAL BIBLE:
-{visual_bible}
-
-Describe exactly what should be visible on screen for this
-narration.
-
-The image should directly communicate the narration.
-
-Include useful visual details such as:
-
-- people
-- clothing
-- architecture
-- environment
-- objects
-- actions
-- historical setting
-- lighting
-- atmosphere
-- camera composition
-- scale and depth
-
-Maintain historical plausibility.
-
-Use the established visual bible consistently.
-
-STYLE:
-Cinematic 3D historical reconstruction,
-high-end game cinematic,
-Unreal Engine style,
-physically plausible materials,
-period-authentic details,
-dramatic natural lighting,
-volumetric atmosphere,
-strong depth,
-detailed environments,
-realistic textures,
-realistic proportions,
-cinematic composition.
-
-Do not:
-
-- rewrite the narration
-- add narration
-- create dialogue
-- mention the narrator
-- create a source card
-- mention modern objects unless historically appropriate
-- use bullet points
-- use JSON
-
-Return ONLY the visual description.
-"""
+    return scenes
 
 
 # ============================================================
 # VISUAL DESCRIPTION GENERATION
 # ============================================================
 
-def generate_visual(
+VISUAL_PROMPT = """
+You are creating a visual description for a historical documentary scene.
+
+The narration for this scene is:
+
+{narration}
+
+Historical visual bible:
+
+{visual_bible}
+
+Describe exactly what should appear on screen.
+
+Requirements:
+- One cinematic visual description.
+- Do NOT write narration.
+- Do NOT explain your reasoning.
+- Do NOT return JSON.
+- Do NOT use bullet points.
+- Focus on visible subjects, actions, environment, architecture,
+  clothing, objects, lighting, camera composition and atmosphere.
+- Keep the visual historically appropriate to the topic.
+- Make the scene visually specific rather than generic.
+- Maintain continuity with the historical visual bible.
+- Use cinematic 3D historical reconstruction.
+- Physically plausible materials.
+- Realistic proportions.
+- Detailed environments and textures.
+- Dramatic natural lighting.
+- Volumetric atmosphere.
+- Strong depth and cinematic composition.
+- High-end game cinematic / Unreal Engine style.
+- Not flat cartoon.
+
+Return ONLY the visual description.
+"""
+
+
+def generate_visual_description(
     qwen,
-    job_id,
-    scene_number,
     narration,
-    visual_bible
+    visual_bible,
+    max_new_tokens=450
 ):
+    """
+    Qwen handles ONLY visual description generation.
 
-    for attempt in range(1, VISUAL_ATTEMPTS + 1):
+    It does NOT control:
+      - scene count
+      - scene boundaries
+      - narration
+      - JSON structure
+    """
 
-        print(
-            f"[SCENES] {job_id} | "
-            f"SCENE {scene_number} | "
-            f"VISUAL ATTEMPT {attempt}/{VISUAL_ATTEMPTS}"
-        )
-
-        try:
-
-            raw = qwen.generate(
-                visual_prompt(
-                    scene_number,
-                    narration,
-                    visual_bible
-                ),
-                max_new_tokens=450,
-                temperature=0.35
-            )
-
-            visual = str(raw).strip()
-
-            # Remove markdown fences.
-            visual = re.sub(
-                r"```(?:text)?",
-                "",
-                visual,
-                flags=re.IGNORECASE
-            )
-
-            visual = visual.replace("```", "").strip()
-
-            # Remove accidental label.
-            visual = re.sub(
-                r"^(?:visual description|description)\s*:\s*",
-                "",
-                visual,
-                flags=re.IGNORECASE
-            )
-
-            if count_words(visual) < 8:
-
-                print(
-                    f"[SCENES] {job_id} | "
-                    f"SCENE {scene_number} | "
-                    f"visual too short"
-                )
-
-                continue
-
-            return visual
-
-        except Exception as e:
-
-            print(
-                f"[SCENES] {job_id} | "
-                f"SCENE {scene_number} | "
-                f"visual error: {e}"
-            )
-
-    raise RuntimeError(
-        f"Could not generate visual description "
-        f"for scene {scene_number}"
+    prompt = VISUAL_PROMPT.format(
+        narration=narration,
+        visual_bible=str(visual_bible)
     )
+
+    result = qwen.generate(
+        prompt,
+        max_new_tokens=max_new_tokens,
+        temperature=0.35,
+    )
+
+    result = normalize_text(result)
+
+    # Remove accidental formatting.
+    result = re.sub(
+        r"^(visual description|description)\s*:\s*",
+        "",
+        result,
+        flags=re.IGNORECASE
+    )
+
+    return result.strip()
 
 
 # ============================================================
 # MAIN RUNNER
 # ============================================================
 
-def run(
-    paths,
-    job_id,
-    narration,
-    visual_bible,
-    config,
-    qwen
-):
+def run(paths, job_id, narration, visual_bible, config, qwen):
 
     print(
-        f"[SCENES] {job_id} | "
-        f"STAGE: SCENE_PLANNING"
+        f"[QWEN] SCENES {job_id} | "
+        "Punctuation-aware deterministic segmentation"
     )
 
-    # ========================================================
-    # STEP 1
-    # Python segments narration.
-    # ========================================================
+    # --------------------------------------------------------
+    # 1. Segment narration using Python.
+    # --------------------------------------------------------
 
-    print(
-        f"[SCENES] {job_id} | "
-        f"STEP 1/2 | deterministic narration segmentation"
-    )
+    scene_parts = segment_narration(narration)
 
-    segments = segment_narration(narration)
+    # --------------------------------------------------------
+    # 2. Generate visual description for each scene.
+    # --------------------------------------------------------
 
-    print(
-        f"[SCENES] {job_id} | "
-        f"SEGMENTATION COMPLETE | "
-        f"{len(segments)} scenes"
-    )
+    final_scenes = []
 
-    for i, segment in enumerate(segments, start=1):
+    for scene in scene_parts:
+
+        number = scene["scene_number"]
+        scene_narration = scene["narration"]
 
         print(
-            f"[SCENES] {job_id} | "
-            f"SCENE {i:02d} | "
-            f"{count_words(segment)} words | "
-            f"{segment}"
+            f"[QWEN] SCENE {number}/{len(scene_parts)} | "
+            f"{scene['word_count']} words | "
+            "generating visual description"
         )
 
-    # ========================================================
-    # STEP 2
-    # Qwen creates ONLY visual descriptions.
-    # ========================================================
-
-    print(
-        f"[SCENES] {job_id} | "
-        f"STEP 2/2 | generating visual descriptions"
-    )
-
-    scenes = []
-
-    for scene_number, segment in enumerate(
-        segments,
-        start=1
-    ):
-
-        visual_description = generate_visual(
+        visual_description = generate_visual_description(
             qwen=qwen,
-            job_id=job_id,
-            scene_number=scene_number,
-            narration=segment,
-            visual_bible=visual_bible
+            narration=scene_narration,
+            visual_bible=visual_bible,
+            max_new_tokens=450,
         )
 
-        scenes.append(
-            {
-                "scene_number": scene_number,
-                "narration": segment,
-                "visual_description": visual_description
-            }
-        )
-
-        print(
-            f"[SCENES] {job_id} | "
-            f"SCENE {scene_number}/{len(segments)} | "
-            f"READY"
-        )
-
-    # ========================================================
-    # FINAL VALIDATION
-    # ========================================================
-
-    final_narration_words = sum(
-        count_words(scene["narration"])
-        for scene in scenes
-    )
-
-    original_narration_words = count_words(narration)
-
-    print(
-        f"[SCENES] {job_id} | "
-        f"ORIGINAL WORDS: {original_narration_words}"
-    )
-
-    print(
-        f"[SCENES] {job_id} | "
-        f"SCENE WORDS: {final_narration_words}"
-    )
-
-    if len(scenes) < MIN_SCENES:
-        raise RuntimeError(
-            f"Too few scenes: {len(scenes)}"
-        )
-
-    if len(scenes) > MAX_SCENES:
-        raise RuntimeError(
-            f"Too many scenes: {len(scenes)}"
-        )
-
-    for scene in scenes:
-
-        wc = count_words(scene["narration"])
-
-        if wc < MIN_SCENE_WORDS:
-            raise RuntimeError(
-                f"Scene {scene['scene_number']} "
-                f"is too short: {wc} words"
+        if not visual_description:
+            raise ValueError(
+                f"Scene {number} returned an empty "
+                "visual description."
             )
 
-        if wc > MAX_SCENE_WORDS:
-            raise RuntimeError(
-                f"Scene {scene['scene_number']} "
-                f"is too long: {wc} words"
+        final_scenes.append({
+            "scene_number": number,
+            "narration": scene_narration,
+            "word_count": scene["word_count"],
+            "visual_description": visual_description,
+        })
+
+    # --------------------------------------------------------
+    # 3. Final validation.
+    # --------------------------------------------------------
+
+    if not (18 <= len(final_scenes) <= 22):
+        raise ValueError(
+            f"Invalid scene count: {len(final_scenes)}"
+        )
+
+    for scene in final_scenes:
+
+        words = word_count(scene["narration"])
+
+        if words < MIN_SCENE_WORDS:
+            raise ValueError(
+                f"Scene {scene['scene_number']} has "
+                f"only {words} words."
             )
 
-    # ========================================================
-    # SAVE
-    # ========================================================
+        if words > MAX_SCENE_WORDS:
+            raise ValueError(
+                f"Scene {scene['scene_number']} has "
+                f"{words} words."
+            )
 
-    output = {
-        "job_id": job_id,
-        "scene_count": len(scenes),
-        "scenes": scenes
+    print(
+        f"[QWEN] SCENES {job_id} | "
+        f"SUCCESS | {len(final_scenes)} scenes"
+    )
+
+    return {
+        "scene_count": len(final_scenes),
+        "scenes": final_scenes,
     }
-
-    output_path = paths.scenes(job_id)
-
-    write_json_atomic(
-        output_path,
-        output
-    )
-
-    print(
-        f"[SCENES] {job_id} | "
-        f"ACCEPTED | {len(scenes)} scenes"
-    )
-
-    print(
-        f"[SCENES] {job_id} | "
-        f"COMPLETE | {output_path}"
-    )
-
-    return output
