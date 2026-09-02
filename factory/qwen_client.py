@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 
-DEFAULT_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
+DEFAULT_MODEL = "Qwen/Qwen3-4B-Instruct-2507"
 # Recommendation for a free-tier T4 (14.56GB VRAM): Qwen 3B + SDXL-Lightning
 # together total ~13GB even at FULL precision, no quantization required --
 # real margin instead of a razor's edge. Qwen 7B needs 4-bit quantization
