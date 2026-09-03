@@ -1,492 +1,262 @@
+from __future__ import annotations
+
 import json
+import os
 import re
 
+from .utils import read_json, write_json_atomic
 
-MIN_SCENE_WORDS = 4
-MAX_SCENE_WORDS = 14
 MIN_SCENES = 18
 MAX_SCENES = 22
+MIN_SCENE_WORDS = 4
+MAX_SCENE_WORDS = 14
+
+
+def word_tokens(text):
+    return re.findall(r"\b[\w’'-]+\b", text)
 
 
 def word_count(text):
-    return len(re.findall(r"\b[\w’'-]+\b", text))
+    return len(word_tokens(text))
 
 
-def clean_json_text(text):
-    """
-    Remove accidental markdown fences if Qwen returns them.
-    """
-    text = text.strip()
-
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-
-    return text.strip()
+def normalize_word_sequence(text):
+    return [x.lower() for x in word_tokens(text)]
 
 
-def validate_scene_plan(data, narration):
-    """
-    Validate Qwen's scene plan.
-
-    Python validates structure.
-    Python does NOT create or rewrite scenes.
-    """
-
+def validate_plan(data, narration):
     if not isinstance(data, dict):
-        raise ValueError("Scene planner output must be an object.")
+        raise ValueError("Scene planner output must be a JSON object.")
 
     scenes = data.get("scenes")
-
     if not isinstance(scenes, list):
-        raise ValueError("Scene planner output has no 'scenes' list.")
+        raise ValueError("Scene planner output is missing 'scenes'.")
 
-    if not (MIN_SCENES <= len(scenes) <= MAX_SCENES):
+    if not MIN_SCENES <= len(scenes) <= MAX_SCENES:
         raise ValueError(
-            f"Invalid scene count: {len(scenes)}. "
-            f"Required {MIN_SCENES}-{MAX_SCENES}."
+            f"Invalid scene count: {len(scenes)}; required {MIN_SCENES}-{MAX_SCENES}."
         )
 
+    previous = []
     for i, scene in enumerate(scenes, 1):
-
         if not isinstance(scene, dict):
+            raise ValueError(f"Scene {i} is not an object.")
+        if "narration" not in scene or "visual_beat" not in scene:
+            raise ValueError(f"Scene {i} must contain narration and visual_beat.")
+
+        n = word_count(str(scene["narration"]))
+        if n < MIN_SCENE_WORDS or n > MAX_SCENE_WORDS:
             raise ValueError(
-                f"Scene {i} is not an object."
+                f"Scene {i} has {n} words; required {MIN_SCENE_WORDS}-{MAX_SCENE_WORDS}."
             )
+        if not str(scene["visual_beat"]).strip():
+            raise ValueError(f"Scene {i} has an empty visual beat.")
 
-        if "narration" not in scene:
-            raise ValueError(
-                f"Scene {i} is missing narration."
-            )
+        previous.extend(normalize_word_sequence(scene["narration"]))
 
-        if "visual_beat" not in scene:
-            raise ValueError(
-                f"Scene {i} is missing visual_beat."
-            )
-
-        scene_narration = str(scene["narration"]).strip()
-
-        words = word_count(scene_narration)
-
-        if words < MIN_SCENE_WORDS:
-            raise ValueError(
-                f"Scene {i} too short: {words} words."
-            )
-
-        if words > MAX_SCENE_WORDS:
-            raise ValueError(
-                f"Scene {i} too long: {words} words."
-            )
-
-        if not scene["visual_beat"].strip():
-            raise ValueError(
-                f"Scene {i} has an empty visual beat."
-            )
-
-    # --------------------------------------------------------
-    # Verify that the scene narration represents the original
-    # narration rather than invented/re-written narration.
-    #
-    # We normalize whitespace only.
-    # --------------------------------------------------------
-
-    original = re.sub(
-        r"\s+",
-        " ",
-        narration.strip()
-    )
-
-    planned = " ".join(
-        str(scene["narration"]).strip()
-        for scene in scenes
-    )
-
-    planned = re.sub(r"\s+", " ", planned)
-
-    if original != planned:
+    original = normalize_word_sequence(narration)
+    if previous != original:
         raise ValueError(
-            "Scene narration does not exactly preserve "
-            "the accepted narration."
+            "Scene narration does not preserve the original narration word-for-word "
+            "and in the original order."
         )
 
-    return True
+    return scenes
 
 
-def generate_scene_plan(
-    qwen,
-    narration,
-    visual_bible,
-    config,
-    attempt=1,
-):
-    """
-    Ask Qwen to intelligently divide the narration into scenes.
+def scene_count_for(words):
+    # Keep the pacing around 8–11 spoken words per shot while respecting the cap.
+    n = round(words / 9.5)
+    return max(MIN_SCENES, min(MAX_SCENES, n))
 
-    Qwen decides:
-      - scene boundaries
-      - scene count
-      - visual beat for each scene
 
-    Python only validates the result.
-    """
+def plan_prompt(narration, visual_bible, target_count):
+    return f"""
+You are the cinematic scene director for a fast-paced historical documentary.
 
-    total_words = word_count(narration)
-
-    prompt = f"""
-You are the scene director for a fast-paced historical documentary.
-
-You have already been given a completed narration.
-
-Your job is to intelligently divide the EXACT narration into
-visual scenes.
-
-NARRATION:
+EXACT NARRATION:
 {narration}
 
-VISUAL BIBLE:
+LOCKED VISUAL CONTEXT:
 {visual_bible}
 
-TOTAL NARRATION WORDS:
-{total_words}
+Create an intelligent scene plan using the EXACT narration above.
 
-SCENE REQUIREMENTS:
+TARGET SCENES: {target_count}
+ALLOWED SCENES: {MIN_SCENES}-{MAX_SCENES}
+ALLOWED WORDS PER SCENE: {MIN_SCENE_WORDS}-{MAX_SCENE_WORDS}
 
-1. Create between 18 and 22 scenes.
-2. Each scene must contain between 4 and 14 narration words.
-3. Preserve the narration EXACTLY.
-4. Do NOT rewrite the narration.
-5. Do NOT summarize the narration.
-6. Do NOT add words.
-7. Do NOT remove words.
-8. Do NOT change word order.
-9. Do NOT merge words.
-10. Do NOT invent narration.
-11. Every word from the narration must appear exactly once.
-12. Scene narration must remain in the original order.
+CRITICAL NARRATION RULES:
+- Use every narration word exactly once.
+- Keep the original word order.
+- Do not add words.
+- Do not remove words.
+- Do not rewrite words.
+- Do not summarize.
+- Do not invent narration.
+- You may choose where a scene begins and ends.
+- Do not make scenes mathematically equal.
 
-INTELLIGENT SCENE BOUNDARIES:
+Choose boundaries intelligently based on:
+- sentence meaning
+- natural spoken pauses
+- punctuation
+- changes of subject
+- changes of action
+- changes of location
+- changes of time
+- visual reveals
+- important historical details
 
-Prefer boundaries that make cinematic sense.
+Each scene should represent a distinct visual beat.
 
-Strongly prefer:
-- sentence endings
-- natural pauses
-- commas
-- semicolons
-- clauses
-- changes in subject
-- changes in action
-- changes in location
-- changes in time
-- important visual reveals
+For each scene return:
+- scene_id: sequential integer starting at 1
+- narration: exact consecutive words from the narration
+- visual_beat: concise description of what the viewer should see
 
-Do NOT mechanically create scenes of equal length.
+Do NOT write the final image-generation prompt yet.
 
-A scene can contain 5 words.
-Another can contain 9.
-Another can contain 12.
-Another can contain 14.
-
-The goal is NATURAL CINEMATIC PACING, not mathematical uniformity.
-
-VISUAL BEATS:
-
-For every scene, create a concise visual beat describing
-what the audience should see during that narration.
-
-The visual beat should be:
-- visually specific
-- historically appropriate
-- connected directly to the narration
-- consistent with the visual bible
-- suitable for a cinematic 3D historical reconstruction
-
-Do not write image-generation prompts yet.
-
-Return ONLY valid JSON.
-
-Required format:
-
+Return ONLY valid JSON:
 {{
   "scenes": [
     {{
-      "scene_number": 1,
-      "narration": "exact words from narration",
-      "visual_beat": "what should visually happen"
+      "scene_id": 1,
+      "narration": "exact consecutive narration words",
+      "visual_beat": "specific cinematic visual beat"
     }}
   ]
 }}
 """
 
-    result = qwen.generate(
-        prompt,
-        max_new_tokens=1800,
-        temperature=0.25,
-    )
 
-    result = clean_json_text(result)
-
-    try:
-        data = json.loads(result)
-    except json.JSONDecodeError as e:
-        raise ValueError(
-            f"Scene planner returned invalid JSON: {e}"
-        )
-
-    validate_scene_plan(data, narration)
-
-    return data
-
-
-def generate_image_description(
-    qwen,
-    scene,
-    visual_bible,
-    config,
-):
-    """
-    Convert the scene's visual beat into a detailed
-    SDXL-ready image description.
-
-    Qwen does NOT control scene structure here.
-    """
-
-    prompt = f"""
-You are creating a cinematic image-generation description
-for a historical documentary.
+def image_prompt_prompt(scene, visual_bible, config):
+    style = getattr(config, "art_style_text", "cinematic 3D historical reconstruction")
+    return f"""
+Create one detailed SDXL image-generation prompt for this historical documentary scene.
 
 SCENE NARRATION:
-{scene["narration"]}
+{scene['narration']}
 
 VISUAL BEAT:
-{scene["visual_beat"]}
+{scene['visual_beat']}
 
-VISUAL BIBLE:
+LOCKED VISUAL BIBLE:
 {visual_bible}
 
-Create one detailed image description for SDXL.
+ART DIRECTION:
+{style}
 
-The image must visually communicate the narration and visual beat.
+Build the prompt in this order:
+1. Main visible subject/action.
+2. Period and regional grounding.
+3. Historically supported clothing, architecture, tools, materials and environment.
+4. Composition, camera angle, depth and scale.
+5. Natural dramatic lighting and volumetric atmosphere.
+6. Cinematic 3D historical reconstruction / high-end game cinematic quality.
 
-Include when appropriate:
-- people
-- clothing
-- physical appearance
-- architecture
-- landscape
-- objects
-- materials
-- period-appropriate technology
-- activities
-- body positions
-- facial expressions
-- environmental details
-- lighting
-- atmosphere
-- camera composition
-- depth
-- scale
-
-STYLE:
-
-cinematic 3D historical reconstruction,
-epic cinematic historical reconstruction,
-physically plausible materials,
-period-authentic details,
-dramatic natural lighting,
-volumetric atmosphere,
-strong depth,
-detailed surfaces,
-cinematic composition,
-realistic proportions,
-highly detailed environments,
-realistic textures,
-dramatic scale,
-high-end game cinematic,
-Unreal Engine style.
-
-Avoid:
-- modern objects
-- modern clothing
-- anachronisms
-- flat cartoon appearance
-- generic fantasy elements
-- text
-- logos
-- watermarks
-
-Return ONLY the image description.
+Do not invent historical details merely to make the image spectacular.
+Do not add modern objects, modern clothing, text, logos or watermarks.
+Do not mention the narration or explain your choices.
+Return ONLY the image prompt.
 """
 
-    result = qwen.generate(
-        prompt,
-        max_new_tokens=700,
-        temperature=0.35,
-    )
 
-    return result.strip()
+def generate_plan(qwen, narration, visual_bible, target_count):
+    last_error = None
+    for attempt in range(1, 5):
+        print(f"[SCENES] PLAN ATTEMPT {attempt}/4")
+        try:
+            data = qwen.generate_json(
+                plan_prompt(narration, visual_bible, target_count),
+                max_new_tokens=2600,
+                retries=2,
+            )
+            validate_plan(data, narration)
+            return data["scenes"]
+        except Exception as e:
+            last_error = e
+            print(f"[SCENES] PLAN ATTEMPT {attempt} FAILED | {e}")
+    raise ValueError(f"Scene planning failed after 4 attempts: {last_error}")
 
 
 def run(paths, job_id, narration, visual_bible, config, qwen):
-
-    print(
-        f"[QWEN] SCENES {job_id} | "
-        "INTELLIGENT SCENE PLANNING"
-    )
-
-    # --------------------------------------------------------
-    # IMPORTANT:
-    # Do NOT modify narration here.
-    # --------------------------------------------------------
-
     narration = narration.strip()
+    total_words = word_count(narration)
+    target_count = scene_count_for(total_words)
 
     print(
-        f"[SCENES] EXACT NARRATION: "
-        f"{word_count(narration)} words"
+        f"[QWEN] SCENES {job_id} | INTELLIGENT PLANNING | "
+        f"{total_words} words | target {target_count} scenes"
     )
 
-    # --------------------------------------------------------
-    # Scene planning retries.
-    # Qwen gets multiple chances to correct its own plan.
-    # --------------------------------------------------------
+    scenes_dir = os.path.dirname(paths.scenes(job_id))
+    partial_path = os.path.join(scenes_dir, "scenes_partial.json")
+    os.makedirs(scenes_dir, exist_ok=True)
 
-    scene_plan = None
+    # First create the scene plan.
+    raw_scenes = generate_plan(qwen, narration, visual_bible, target_count)
 
-    for attempt in range(1, 5):
-
-        print(
-            f"[SCENES] PLAN ATTEMPT "
-            f"{attempt}/4"
-        )
-
-        try:
-
-            scene_plan = generate_scene_plan(
-                qwen=qwen,
-                narration=narration,
-                visual_bible=visual_bible,
-                config=config,
-                attempt=attempt,
-            )
-
-            print(
-                f"[SCENES] PLAN ACCEPTED | "
-                f"{len(scene_plan['scenes'])} scenes"
-            )
-
-            break
-
-        except Exception as e:
-
-            print(
-                f"[SCENES] PLAN ATTEMPT {attempt} "
-                f"FAILED | {e}"
-            )
-
-            if attempt == 4:
-                raise ValueError(
-                    "Scene planning failed after 4 attempts."
-                )
-
-
-    # --------------------------------------------------------
-    # Generate detailed image descriptions.
-    # --------------------------------------------------------
+    # Generate image descriptions scene-by-scene. Save partial progress so a
+    # Colab reset does not throw away completed descriptions.
+    partial = read_json(partial_path, {}) or {}
+    completed = partial.get("scenes", []) if isinstance(partial, dict) else []
+    completed_by_id = {
+        int(x["scene_id"]): x
+        for x in completed
+        if isinstance(x, dict) and str(x.get("scene_id", "")).isdigit()
+    }
 
     final_scenes = []
 
-    total = len(scene_plan["scenes"])
+    for i, scene in enumerate(raw_scenes, 1):
+        sid = int(scene["scene_id"])
 
-    for index, scene in enumerate(
-        scene_plan["scenes"],
-        1
-    ):
+        if sid in completed_by_id and completed_by_id[sid].get("image_prompt"):
+            image_prompt = completed_by_id[sid]["image_prompt"]
+            print(f"[QWEN] IMAGE DESCRIPTION {i}/{len(raw_scenes)} | SCENE {sid} | exists, skip")
+        else:
+            print(f"[QWEN] IMAGE DESCRIPTION {i}/{len(raw_scenes)} | SCENE {sid} | generating")
+            image_prompt = qwen.generate(
+                image_prompt_prompt(scene, visual_bible, config),
+                max_new_tokens=800,
+                temperature=0.35,
+            ).strip()
+            if not image_prompt:
+                raise ValueError(f"Scene {sid} returned an empty image description.")
 
-        scene_number = scene["scene_number"]
+        item = {
+            "scene_id": sid,
+            "scene_number": sid,
+            "narration": str(scene["narration"]).strip(),
+            "word_count": word_count(scene["narration"]),
+            "visual_beat": str(scene["visual_beat"]).strip(),
+            "image_prompt": image_prompt,
+            "image_description": image_prompt,
+        }
+        final_scenes.append(item)
 
-        print(
-            f"[QWEN] IMAGE DESCRIPTION "
-            f"{index}/{total} | SCENE {scene_number}"
+        write_json_atomic(
+            partial_path,
+            {"scene_count": len(raw_scenes), "scenes": final_scenes},
         )
 
-        image_description = generate_image_description(
-            qwen=qwen,
-            scene=scene,
-            visual_bible=visual_bible,
-            config=config,
-        )
-
-        if not image_description:
-            raise ValueError(
-                f"Scene {scene_number} returned "
-                "an empty image description."
-            )
-
-        final_scenes.append({
-            "scene_number": scene_number,
-            "narration": scene["narration"],
-            "word_count": word_count(
-                scene["narration"]
-            ),
-            "visual_beat": scene["visual_beat"],
-            "image_description": image_description,
-        })
-
-
-    # --------------------------------------------------------
-    # Final validation.
-    # --------------------------------------------------------
-
-    if not (18 <= len(final_scenes) <= 22):
-        raise ValueError(
-            f"Invalid final scene count: "
-            f"{len(final_scenes)}"
-        )
-
-    combined = " ".join(
-        scene["narration"]
-        for scene in final_scenes
-    )
-
-    combined = re.sub(
-        r"\s+",
-        " ",
-        combined.strip()
-    )
-
-    original = re.sub(
-        r"\s+",
-        " ",
-        narration.strip()
-    )
-
-    if combined != original:
-        raise ValueError(
-            "Final scene narration does not exactly "
-            "match the accepted narration."
-        )
-
-    for scene in final_scenes:
-
-        words = word_count(scene["narration"])
-
-        if not (
-            MIN_SCENE_WORDS
-            <= words
-            <= MAX_SCENE_WORDS
-        ):
-            raise ValueError(
-                f"Scene {scene['scene_number']} "
-                f"has {words} words."
-            )
-
-    print(
-        f"[QWEN] SCENES {job_id} | "
-        f"COMPLETE | {len(final_scenes)} scenes"
-    )
-
-    return {
+    output = {
         "scene_count": len(final_scenes),
+        "narration_word_count": total_words,
         "scenes": final_scenes,
     }
+
+    validate_plan(output, narration)
+    write_json_atomic(paths.scenes(job_id), output)
+
+    try:
+        os.remove(partial_path)
+    except FileNotFoundError:
+        pass
+
+    print(
+        f"[QWEN] SCENES {job_id} | COMPLETE | "
+        f"{len(final_scenes)} scenes"
+    )
+    return output
