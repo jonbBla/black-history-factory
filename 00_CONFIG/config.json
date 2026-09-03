@@ -5,11 +5,11 @@
   "target_video_seconds": 90,
   "min_video_seconds": 80,
   "max_video_seconds": 100,
-  "narration_words_min": 175,
+  "narration_words_min": 170,
   "narration_words_max": 220,
-  "scene_count_min": 20,
-  "scene_count_max": 40,
-  "image_model": "sdxl-lightning",
+  "scene_count_min": 18,
+  "scene_count_max": 22,
+  "image_model": "ByteDance/SDXL-Lightning",
   "image_width": 768,
   "image_height": 1344,
   "image_steps": 4,
@@ -46,5 +46,6 @@
     "use_region_specific_architecture": true,
     "use_period_specific_materials": true,
     "use_evidence_based_visual_details": true
-  }
+  },
+  "max_scene_words": 14
 }
