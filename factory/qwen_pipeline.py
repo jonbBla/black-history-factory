@@ -1,148 +1,494 @@
-from . import topic_engine, research_engine, fact_checker
-from . import visual_bible, script_engine, scene_engine, status
-from .utils import read_json, write_json_atomic, now_iso
 import os
+import json
+import traceback
+
+from factory import (
+    research_engine,
+    fact_checker,
+    visual_bible,
+    script_engine,
+    scene_engine,
+    status,
+)
 
 
-def _valid_json_file(path):
-    if not os.path.isfile(path):
-        return False
+# ============================================================
+# HELPERS
+# ============================================================
+
+def _read_json(path):
+    if not os.path.exists(path):
+        return None
+
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _write_json(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    tmp = path + ".tmp"
+
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(
+            data,
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    os.replace(tmp, path)
+
+
+def _update_status(paths, job_id, stage, message):
+    """
+    Status updates are best-effort so a dashboard problem
+    does not kill the actual processing job.
+    """
+
     try:
-        data = read_json(path, None)
-        return isinstance(data, (dict, list)) and bool(data)
-    except Exception:
-        return False
-
-
-def run_one(paths, topic, job_id, config, qwen):
-    try:
-        # ---------------------------------------------------------
-        # RESEARCH
-        # ---------------------------------------------------------
-        if _valid_json_file(paths.research(job_id)):
-            research = read_json(paths.research(job_id), {})
-            print(f"[QWEN] {job_id} | RESEARCH | existing output found -> skipping")
-        else:
-            print(f"[QWEN] {job_id} | STAGE: RESEARCH | researching topic")
-            topic_engine.update_status(paths, job_id, "QWEN_RESEARCHING")
-            research = research_engine.run(paths, job_id, topic, qwen)
-
-        # ---------------------------------------------------------
-        # FACT CHECK
-        # ---------------------------------------------------------
-        if _valid_json_file(paths.verified(job_id)):
-            verified = read_json(paths.verified(job_id), {})
-            print(f"[QWEN] {job_id} | FACT_CHECK | existing output found -> skipping")
-        else:
-            print(f"[QWEN] {job_id} | STAGE: FACT_CHECK | reviewing research classifications")
-            topic_engine.update_status(paths, job_id, "QWEN_FACT_CHECK")
-            verified = fact_checker.run(paths, job_id, qwen)
-
-            if verified.get("verdict") == "REJECT":
-                topic_engine.update_status(
-                    paths, job_id, "REJECTED",
-                    reason=verified.get("issues", [])
-                )
-                print(f"[QWEN] {job_id} | REJECTED | fact check failed")
-                return False
-
-        # ---------------------------------------------------------
-        # VISUAL BIBLE
-        # ---------------------------------------------------------
-        if _valid_json_file(paths.visual_bible(job_id)):
-            vb = read_json(paths.visual_bible(job_id), {})
-            print(f"[QWEN] {job_id} | VISUAL_BIBLE | existing output found -> skipping")
-        else:
-            print(f"[QWEN] {job_id} | STAGE: VISUAL_BIBLE | building consistent visual rules")
-            topic_engine.update_status(paths, job_id, "QWEN_VISUAL_BIBLE")
-
-            # visual_bible.run() in this repository takes EXACTLY 4 arguments.
-            vb = visual_bible.run(topic, research, config, qwen)
-
-            write_json_atomic(
-                paths.visual_bible(job_id),
-                vb
-            )
-
-        # ---------------------------------------------------------
-        # NARRATION
-        # ---------------------------------------------------------
-        if os.path.isfile(paths.narration(job_id)):
-            with open(paths.narration(job_id), "r", encoding="utf-8") as f:
-                narration = f.read().strip()
-            if narration:
-                print(f"[QWEN] {job_id} | NARRATION | existing output found -> skipping")
-            else:
-                narration = None
-        else:
-            narration = None
-
-        if not narration:
-            print(f"[QWEN] {job_id} | STAGE: NARRATION | writing and validating narration")
-            topic_engine.update_status(paths, job_id, "QWEN_NARRATION")
-            narration = script_engine.run(
-                paths, job_id, topic, verified, config, qwen
-            )
-
-        if not narration or len(narration.split()) < 100:
-            raise ValueError(
-                f"Narration is too short: {len(narration.split()) if narration else 0} words"
-            )
-
-        # ---------------------------------------------------------
-        # SCENE PLANNING
-        # ---------------------------------------------------------
-        if _valid_json_file(paths.scenes(job_id)):
-            scenes = read_json(paths.scenes(job_id), [])
-            if isinstance(scenes, dict):
-                scenes = scenes.get("scenes", [])
-            if not isinstance(scenes, list) or not scenes:
-                scenes = None
-            else:
-                print(f"[QWEN] {job_id} | SCENE_PLANNING | existing output found -> skipping")
-        else:
-            scenes = None
-
-        if scenes is None:
-            print(f"[QWEN] {job_id} | STAGE: SCENE_PLANNING | creating unique visual beats")
-            topic_engine.update_status(paths, job_id, "QWEN_SCENE_PLANNING")
-            scenes = scene_engine.run(
-                paths, job_id, narration, vb, config, qwen
-            )
-
-        if not scenes:
-            raise ValueError("No scenes generated")
-
-        # ---------------------------------------------------------
-        # COMPLETE
-        # ---------------------------------------------------------
-        topic_engine.update_status(
+        status.update_status(
             paths,
             job_id,
-            "QWEN_READY",
-            scene_count=len(scenes),
-            ready_at=now_iso()
+            stage,
+            message,
+        )
+    except Exception as e:
+        print(
+            f"[STATUS] WARNING | "
+            f"Could not update status: {e}"
         )
 
-        topic_engine.mark_used(paths, topic)
-        status.set_processor(paths, "qwen", "idle", job_id, "ready")
+
+# ============================================================
+# MAIN QWEN PIPELINE
+# ============================================================
+
+def run_one(
+    paths,
+    topic,
+    job_id,
+    config,
+    qwen,
+):
+    """
+    Process one topic through the complete Qwen pipeline.
+
+    PIPELINE:
+
+        TOPIC
+          ↓
+        SOURCE SEARCH / RESEARCH
+          ↓
+        RESEARCH MATERIAL
+          ↓
+        QWEN
+          ↓
+        EVIDENCE / FACT DOSSIER
+          ↓
+        FACT-CHECK / VALIDATE
+          ↓
+        QWEN
+          ↓
+        NARRATION
+          ↓
+        QWEN
+          ↓
+        INTELLIGENT SCENE PLAN
+          ↓
+        QWEN
+          ↓
+        IMAGE DESCRIPTIONS
+          ↓
+        SDXL
+
+    This function only orchestrates stages.
+    Individual processors remain responsible for their
+    own generation and validation.
+    """
+
+    try:
+
+        # ====================================================
+        # JOB DIRECTORY
+        # ====================================================
+
+        job_dir = paths.job(job_id)
+
+        os.makedirs(job_dir, exist_ok=True)
+
+        # ====================================================
+        # FILE PATHS
+        # ====================================================
+
+        research_path = os.path.join(
+            job_dir,
+            "research.json",
+        )
+
+        fact_check_path = os.path.join(
+            job_dir,
+            "fact_check.json",
+        )
+
+        visual_bible_path = os.path.join(
+            job_dir,
+            "visual_bible.json",
+        )
+
+        narration_path = os.path.join(
+            job_dir,
+            "narration.txt",
+        )
+
+        scenes_path = os.path.join(
+            job_dir,
+            "scenes.json",
+        )
+
+        # ====================================================
+        # START
+        # ====================================================
 
         print(
-            f"[QWEN] {job_id} | COMPLETE | {len(scenes)} scenes | QWEN_READY"
+            f"[QWEN] {job_id} | "
+            f"START | {topic.title}"
         )
+
+        # ====================================================
+        # STAGE 1 — RESEARCH
+        # ====================================================
+
+        existing_research = _read_json(
+            research_path
+        )
+
+        if existing_research is not None:
+
+            research = existing_research
+
+            print(
+                f"[QWEN] {job_id} | "
+                "RESEARCH | existing output found -> skipping"
+            )
+
+        else:
+
+            print(
+                f"[QWEN] {job_id} | "
+                "STAGE: RESEARCH | researching topic"
+            )
+
+            _update_status(
+                paths,
+                job_id,
+                "research",
+                "Researching topic",
+            )
+
+            research = research_engine.run(
+                topic=topic,
+                config=config,
+                qwen=qwen,
+            )
+
+            _write_json(
+                research_path,
+                research,
+            )
+
+            print(
+                f"[QWEN] {job_id} | "
+                "RESEARCH | complete"
+            )
+
+        # ====================================================
+        # STAGE 2 — FACT CHECK
+        # ====================================================
+
+        existing_fact_check = _read_json(
+            fact_check_path
+        )
+
+        if existing_fact_check is not None:
+
+            fact_check = existing_fact_check
+
+            print(
+                f"[QWEN] {job_id} | "
+                "FACT_CHECK | existing output found -> skipping"
+            )
+
+        else:
+
+            print(
+                f"[QWEN] {job_id} | "
+                "STAGE: FACT_CHECK | reviewing research classifications"
+            )
+
+            _update_status(
+                paths,
+                job_id,
+                "fact_check",
+                "Validating research and evidence",
+            )
+
+            fact_check = fact_checker.run(
+                topic=topic,
+                research=research,
+                config=config,
+                qwen=qwen,
+            )
+
+            _write_json(
+                fact_check_path,
+                fact_check,
+            )
+
+            print(
+                f"[QWEN] {job_id} | "
+                "FACT_CHECK | complete"
+            )
+
+        # ====================================================
+        # STAGE 3 — VISUAL BIBLE
+        # ====================================================
+
+        existing_visual_bible = _read_json(
+            visual_bible_path
+        )
+
+        if existing_visual_bible is not None:
+
+            visual_bible_data = existing_visual_bible
+
+            print(
+                f"[QWEN] {job_id} | "
+                "VISUAL_BIBLE | existing output found -> skipping"
+            )
+
+        else:
+
+            print(
+                f"[QWEN] {job_id} | "
+                "STAGE: VISUAL_BIBLE | building consistent visual rules"
+            )
+
+            _update_status(
+                paths,
+                job_id,
+                "visual_bible",
+                "Building visual bible",
+            )
+
+            visual_bible_data = visual_bible.run(
+                topic=topic,
+                research=research,
+                config=config,
+                qwen=qwen,
+            )
+
+            _write_json(
+                visual_bible_path,
+                visual_bible_data,
+            )
+
+            print(
+                f"[QWEN] {job_id} | "
+                "VISUAL_BIBLE | complete"
+            )
+
+        # ====================================================
+        # STAGE 4 — NARRATION
+        # ====================================================
+
+        if os.path.exists(narration_path):
+
+            with open(
+                narration_path,
+                "r",
+                encoding="utf-8",
+            ) as f:
+                narration = f.read().strip()
+
+            print(
+                f"[QWEN] {job_id} | "
+                "NARRATION | existing output found -> skipping"
+            )
+
+        else:
+
+            print(
+                f"[QWEN] {job_id} | "
+                "STAGE: NARRATION | writing and validating narration"
+            )
+
+            _update_status(
+                paths,
+                job_id,
+                "narration",
+                "Writing and validating narration",
+            )
+
+            narration = script_engine.run(
+                paths=paths,
+                job_id=job_id,
+                topic=topic,
+                research=research,
+                fact_check=fact_check,
+                visual_bible=visual_bible_data,
+                config=config,
+                qwen=qwen,
+            )
+
+            narration = narration.strip()
+
+            with open(
+                narration_path,
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write(narration)
+
+            print(
+                f"[QWEN] {job_id} | "
+                "NARRATION | complete"
+            )
+
+        # ====================================================
+        # IMPORTANT NARRATION VALIDATION
+        # ====================================================
+
+        if not narration:
+
+            raise ValueError(
+                "Narration is empty."
+            )
+
+        print(
+            f"[QWEN] {job_id} | "
+            f"NARRATION WORDS: {len(narration.split())}"
+        )
+
+        # ====================================================
+        # STAGE 5 — INTELLIGENT SCENE PLANNING
+        # ====================================================
+
+        if os.path.exists(scenes_path):
+
+            with open(
+                scenes_path,
+                "r",
+                encoding="utf-8",
+            ) as f:
+                scenes = json.load(f)
+
+            print(
+                f"[QWEN] {job_id} | "
+                "SCENE_PLANNING | existing output found -> skipping"
+            )
+
+        else:
+
+            print(
+                f"[QWEN] {job_id} | "
+                "STAGE: SCENE_PLANNING | "
+                "Qwen intelligently planning scenes"
+            )
+
+            _update_status(
+                paths,
+                job_id,
+                "scene_planning",
+                "Planning cinematic scenes",
+            )
+
+            scenes = scene_engine.run(
+                paths=paths,
+                job_id=job_id,
+                narration=narration,
+                visual_bible=visual_bible_data,
+                config=config,
+                qwen=qwen,
+            )
+
+            _write_json(
+                scenes_path,
+                scenes,
+            )
+
+            print(
+                f"[QWEN] {job_id} | "
+                "SCENE_PLANNING | complete"
+            )
+
+        # ====================================================
+        # FINAL QWEN VALIDATION
+        # ====================================================
+
+        if not isinstance(scenes, dict):
+
+            raise ValueError(
+                "Scene output must be a dictionary."
+            )
+
+        scene_list = scenes.get(
+            "scenes"
+        )
+
+        if not isinstance(
+            scene_list,
+            list,
+        ):
+
+            raise ValueError(
+                "Scene output does not contain "
+                "a valid 'scenes' list."
+            )
+
+        if not (
+            18
+            <= len(scene_list)
+            <= 22
+        ):
+
+            raise ValueError(
+                f"Invalid scene count: "
+                f"{len(scene_list)}"
+            )
+
+        # ====================================================
+        # COMPLETE
+        # ====================================================
+
+        _update_status(
+            paths,
+            job_id,
+            "qwen_complete",
+            "Qwen processing complete",
+        )
+
+        print(
+            f"[QWEN] {job_id} | "
+            f"COMPLETE | "
+            f"{len(scene_list)} scenes prepared"
+        )
+
         return True
 
-    except Exception as exc:
-        topic_engine.update_status(
-            paths, job_id, "FAILED", error=str(exc)
+    except Exception as e:
+
+        print(
+            f"[QWEN] ERROR {job_id} | {e}"
         )
 
-        try:
-            status.set_processor(
-                paths, "qwen", "error", job_id, "failed", str(exc)
-            )
-        except Exception:
-            pass
+        traceback.print_exc()
 
-        print(f"[QWEN] ERROR {job_id} | {exc}")
+        _update_status(
+            paths,
+            job_id,
+            "error",
+            str(e),
+        )
+
         return False
