@@ -1,123 +1,45 @@
 from __future__ import annotations
-
 import re
+MIN_NARRATION_WORDS=170
+TARGET_NARRATION_WORDS=220
+MAX_NARRATION_WORDS=270
+MAX_ATTEMPTS=6
 
-MIN_NARRATION_WORDS = 170
-MAX_NARRATION_WORDS = 220
-TARGET_NARRATION_WORDS = 195
-MAX_NARRATION_ATTEMPTS = 6
-
-
-def count_words(text):
-    return len(re.findall(r"\b[\w’'-]+\b", text))
-
-
+def count_words(text): return len(re.findall(r"\b[\w’'-]+\b",text or ""))
 def clean_narration(text):
-    text = text.strip()
-    text = re.sub(r"^```(?:text)?\s*", "", text, flags=re.I)
-    text = re.sub(r"\s*```$", "", text)
-    text = re.sub(r"^(narration|script)\s*:\s*", "", text, flags=re.I)
-    return re.sub(r"\s+", " ", text).strip()
+    text=(text or "").strip(); text=re.sub(r"^```(?:text)?\s*","",text,flags=re.I); text=re.sub(r"\s*```$","",text); text=re.sub(r"^(narration|script)\s*:\s*","",text,flags=re.I); return re.sub(r"\s+"," ",text).strip()
+def _prompt(topic,research,fact_check,correction=""):
+    return f'''Write the final spoken narration for a fast-paced vertical historical documentary.
 
-
-def valid_length(text):
-    n = count_words(text)
-    return MIN_NARRATION_WORDS <= n <= MAX_NARRATION_WORDS
-
-
-def prompt_for(topic, research, fact_check, visual_bible, correction=""):
-    return f"""
-Write the final narration for a fast-paced 80–100 second historical documentary.
-
-TOPIC:
-{topic.title}
-
-EVIDENCE DOSSIER:
+TOPIC: {topic.title}
+RESEARCH:
 {research}
-
-FACT-CHECK / VALIDATION:
+FACT CHECK:
 {fact_check}
 
-VISUAL CONTEXT:
-{visual_bible}
-
-LENGTH:
-Target approximately {TARGET_NARRATION_WORDS} words.
-HARD minimum: {MIN_NARRATION_WORDS} words.
-HARD maximum: {MAX_NARRATION_WORDS} words.
+LENGTH: target about {TARGET_NARRATION_WORDS} words; minimum {MIN_NARRATION_WORDS}; maximum {MAX_NARRATION_WORDS}. The final video may be under two minutes or slightly over two minutes when the story needs it. Do not pad for length.
 
 STYLE:
-- Begin with a question, surprising detail, contradiction, or unresolved puzzle.
-- Keep the story moving through context, evidence, explanation, unexpected detail,
-  significance and conclusion.
-- Use only claims supported by the evidence dossier/fact-check.
-- Never present mythology, oral tradition, interpretation or uncertainty as fact.
-- Avoid colonization-centered framing.
-- Natural spoken English and punctuation.
-- No headings, scene numbers, visual directions or production notes.
-- End naturally so a blank source card can follow.
-
+- Open with a question, surprise, contradiction, mystery, or striking fact.
+- Move quickly through context, evidence, culture, people/places, an unexpected detail, significance, and conclusion.
+- Include useful visual/historical details when supported, especially attire/textiles, architecture, technology, art, food/daily life, and customs.
+- Use only claims verified/supported by the research and fact check.
+- Clearly phrase uncertainty, oral tradition, mythology, and scholarly disagreement.
+- Do not make colonization the central framing.
+- Natural spoken English. No headings, labels, scene directions, citations, or production notes.
+- End naturally before the source card.
 Return ONLY the narration.
-{correction}
-"""
-
-
-def generate_narration(qwen, topic, research, fact_check, visual_bible):
-    best = None
-    best_distance = float("inf")
-
-    previous_count = None
-
-    for attempt in range(1, MAX_NARRATION_ATTEMPTS + 1):
-        correction = ""
-
-        if previous_count is not None:
-            if previous_count < MIN_NARRATION_WORDS:
-                correction = f"""
-CORRECTION: The previous attempt was {previous_count} words.
-It was too short. Rewrite it as a complete, useful narration of
-{MIN_NARRATION_WORDS}–{MAX_NARRATION_WORDS} words. Add substantive context,
-not filler.
-"""
-            elif previous_count > MAX_NARRATION_WORDS:
-                correction = f"""
-CORRECTION: The previous attempt was {previous_count} words.
-It was too long. Rewrite it to {MIN_NARRATION_WORDS}–{MAX_NARRATION_WORDS} words.
-Remove repetition and filler while preserving important evidence.
-"""
-
-        print(f"[SCRIPT] ATTEMPT {attempt}/{MAX_NARRATION_ATTEMPTS} | Generating narration")
-
-        raw = qwen.generate(
-            prompt_for(topic, research, fact_check, visual_bible, correction),
-            max_new_tokens=800,
-            temperature=0.35,
-        )
-        script = clean_narration(raw)
-        n = count_words(script)
-        print(f"[SCRIPT] Attempt {attempt}: {n} words")
-
-        distance = abs(n - TARGET_NARRATION_WORDS)
-        if distance < best_distance:
-            best = script
-            best_distance = distance
-
-        if valid_length(script):
-            print(f"[SCRIPT] ACCEPTED | {n} words")
-            return script
-
-        previous_count = n
-
-    raise ValueError(
-        f"Narration generation failed after {MAX_NARRATION_ATTEMPTS} attempts. "
-        f"Best attempt was {count_words(best) if best else 0} words; "
-        f"required {MIN_NARRATION_WORDS}-{MAX_NARRATION_WORDS}."
-    )
-
-
-def run(paths, job_id, topic, research, fact_check, visual_bible, config, qwen):
-    print(f"[QWEN] {job_id} | STAGE: NARRATION | writing and validating narration")
-    narration = generate_narration(qwen, topic, research, fact_check, visual_bible)
-    with open(paths.narration(job_id), "w", encoding="utf8") as f:
-        f.write(narration)
-    return narration
+{correction}'''
+def run(paths,job_id,topic,research,fact_check,config,qwen):
+    previous=None
+    for attempt in range(1,MAX_ATTEMPTS+1):
+        correction=""
+        if previous is not None:
+            correction=(f"The previous draft was {previous} words. Rewrite it with more substantive supported detail and make it {MIN_NARRATION_WORDS}-{MAX_NARRATION_WORDS} words." if previous<MIN_NARRATION_WORDS else f"The previous draft was {previous} words. Rewrite it shorter, removing repetition, and keep it {MIN_NARRATION_WORDS}-{MAX_NARRATION_WORDS} words.")
+        print(f"[SCRIPT] ATTEMPT {attempt}/{MAX_ATTEMPTS}")
+        text=clean_narration(qwen.generate(_prompt(topic,research,fact_check,correction),max_new_tokens=1100,temperature=0.35)); n=count_words(text); print(f"[SCRIPT] {n} words")
+        if MIN_NARRATION_WORDS<=n<=MAX_NARRATION_WORDS:
+            with open(paths.narration(job_id),"w",encoding="utf-8") as f:f.write(text)
+            return text
+        previous=n
+    raise ValueError(f"Narration failed after {MAX_ATTEMPTS} attempts; last length {previous} words.")

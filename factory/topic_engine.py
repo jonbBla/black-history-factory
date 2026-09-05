@@ -1,5 +1,6 @@
 from dataclasses import dataclass, asdict
 import os
+import random
 
 from .utils import read_json, write_json_atomic, now_iso
 
@@ -98,14 +99,10 @@ def claim_next_topic(paths, processor="qwen"):
                     manifest["topic_id"]
                 )
 
-    for topic in topics:
+    candidates = [t for t in topics if not t.used and t.id not in claimed]
+    random.shuffle(candidates)
 
-        if topic.used:
-            continue
-
-        if topic.id in claimed:
-            continue
-
+    for topic in candidates:
         job_id = _next_job_id(paths)
 
         # Create the job directory.

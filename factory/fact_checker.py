@@ -1,363 +1,75 @@
-import json
-import re
-
-
-MAX_FACT_CHECK_ATTEMPTS = 6
-
-
-def clean_json_response(text):
-    """
-    Clean common Qwen formatting mistakes before JSON parsing.
-    """
-
-    if not text:
-        return ""
-
-    text = text.strip()
-
-    # Remove markdown code fences.
-    text = re.sub(
-        r"```(?:json)?",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    text = text.replace("```", "")
-
-    # Remove common prefixes.
-    text = re.sub(
-        r"^(json|result|response)\s*:\s*",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    return text.strip()
-
-
-def extract_json_object(text):
-    """
-    Extract the largest balanced JSON object from Qwen output.
-
-    Unlike a simple regex, this understands quoted strings,
-    escaped quotes and nested braces.
-    """
-
-    text = clean_json_response(text)
-
-    start = text.find("{")
-
-    if start == -1:
-        raise ValueError(
-            "No JSON object found in Qwen response."
-        )
-
-    depth = 0
-    in_string = False
-    escaped = False
-
-    for i in range(start, len(text)):
-
-        char = text[i]
-
-        if escaped:
-            escaped = False
-            continue
-
-        if char == "\\" and in_string:
-            escaped = True
-            continue
-
-        if char == '"':
-            in_string = not in_string
-            continue
-
-        if in_string:
-            continue
-
-        if char == "{":
-            depth += 1
-
-        elif char == "}":
-            depth -= 1
-
-            if depth == 0:
-                return text[start:i + 1]
-
-    raise ValueError(
-        "JSON object appears to be incomplete."
-    )
-
-
-def parse_json_response(text):
-    """
-    Parse Qwen's JSON response.
-    """
-
-    cleaned = clean_json_response(text)
-
-    # First try the entire response.
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        pass
-
-    # Then extract a balanced JSON object.
-    extracted = extract_json_object(cleaned)
-
-    try:
-        return json.loads(extracted)
-
-    except json.JSONDecodeError as e:
-
-        raise ValueError(
-            "Found a JSON-like block but failed to parse it: "
-            f"{e}"
-        )
-
-
-def validate_fact_check(data):
-    """
-    Validate the fact-check structure.
-    """
-
-    if not isinstance(data, dict):
-        raise ValueError(
-            "Fact-check result must be a JSON object."
-        )
-
-    if "claims" not in data:
-        raise ValueError(
-            "Fact-check result is missing 'claims'."
-        )
-
-    if not isinstance(data["claims"], list):
-        raise ValueError(
-            "'claims' must be a list."
-        )
-
-    for index, claim in enumerate(
-        data["claims"],
-        1,
-    ):
-
-        if not isinstance(claim, dict):
-            raise ValueError(
-                f"Claim {index} is not an object."
-            )
-
-        required = [
-            "claim",
-            "classification",
-            "evidence",
-        ]
-
-        for field in required:
-
-            if field not in claim:
-                raise ValueError(
-                    f"Claim {index} is missing "
-                    f"'{field}'."
-                )
-
-        classification = str(
-            claim["classification"]
-        ).lower().strip()
-
-        allowed = {
-            "verified",
-            "supported",
-            "uncertain",
-            "unsupported",
-            "false",
-            "misleading",
-        }
-
-        if classification not in allowed:
-            raise ValueError(
-                f"Claim {index} has invalid "
-                f"classification: {classification}"
-            )
-
-    return True
-
-
-def build_prompt(
-    topic,
-    research,
-    evidence_dossier,
-):
-    return f"""
-You are a historical fact-checking assistant.
-
-Your task is to evaluate the evidence dossier against
-the supplied research material.
-
-TOPIC:
-{topic}
-
-RESEARCH MATERIAL:
-{research}
-
-EVIDENCE DOSSIER:
-{evidence_dossier}
-
-For every important factual claim:
-
-1. Identify the claim.
-2. Determine whether the supplied evidence supports it.
-3. Classify it as one of:
-
-   verified
-   supported
-   uncertain
-   unsupported
-   false
-   misleading
-
-4. Explain the evidence briefly.
-5. Identify the source supporting the claim when possible.
-
-IMPORTANT:
-
-- Do not invent sources.
-- Do not invent evidence.
-- Do not introduce unrelated historical claims.
-- If evidence is insufficient, use "uncertain".
-- Distinguish traditional/cultural claims from independently
-  verified historical facts.
-- Do not treat a traditional account as automatically false.
-- Do not treat a traditional account as independently verified
-  historical fact unless the evidence supports that conclusion.
-
-RETURN ONLY VALID JSON.
-
-Do not use Markdown.
-Do not use ```json.
-Do not write anything before or after the JSON.
-
-The response MUST have exactly this general structure:
-
+from __future__ import annotations
+import json,re
+MAX_ATTEMPTS=4
+ALLOWED={"verified","supported","uncertain","unsupported","false","misleading"}
+
+def _extract_json(text):
+    text=(text or "").strip(); text=re.sub(r"^```(?:json)?\s*","",text,flags=re.I); text=re.sub(r"\s*```$","",text)
+    try:return json.loads(text)
+    except Exception:pass
+    for start,ch in enumerate(text):
+        if ch not in "{[": continue
+        stack=[]; ins=False; esc=False
+        for i in range(start,len(text)):
+            c=text[i]
+            if ins:
+                if esc: esc=False
+                elif c=='\\': esc=True
+                elif c=='"': ins=False
+                continue
+            if c=='"': ins=True
+            elif c in "{[": stack.append(c)
+            elif c in "}]":
+                if not stack or (c=='}' and stack[-1]!='{') or (c==']' and stack[-1]!='['): break
+                stack.pop()
+                if not stack:
+                    try:return json.loads(text[start:i+1])
+                    except Exception: break
+    raise ValueError("No valid JSON object found in model response.")
+
+def _prompt(topic,research):
+    sources=research.get("source_search",[]) if isinstance(research,dict) else []
+    source_lines=[]
+    for i,s in enumerate(sources,1): source_lines.append(f"SOURCE {i}: {s.get('title','')} | {s.get('url','')}\n{s.get('material','')[:3500]}")
+    dossier=dict(research); dossier.pop("source_search",None); dossier.pop("researched_at",None); dossier.pop("topic_id",None)
+    return f'''You are a strict historical fact checker.
+
+TOPIC: {topic.title}
+
+SOURCE MATERIAL
+{chr(10).join(source_lines)}
+
+EVIDENCE DOSSIER
+{json.dumps(dossier,ensure_ascii=False,indent=2)}
+
+Check the important claims in the dossier against the supplied source material. Do not invent sources. Traditional or mythological claims can be valid cultural evidence, but do not label them independently verified history without supporting evidence.
+
+Return ONLY this compact JSON:
 {{
-  "overall_status": "PASS or REVIEW",
-  "claims": [
-    {{
-      "claim": "factual claim",
-      "classification": "verified",
-      "evidence": "brief evidence explanation",
-      "source": "source or source identifier",
-      "notes": "optional note"
-    }}
-  ],
-  "summary": "overall fact-check summary"
+  "overall_status":"PASS" or "REVIEW",
+  "claims":[{{"claim":"short claim","classification":"verified|supported|uncertain|unsupported|false|misleading","evidence":"short reason","source":"SOURCE 1 or SOURCE 2 or NONE"}}],
+  "summary":"short overall assessment"
 }}
+Check important claims, not every sentence. Keep the response compact.'''
 
-CRITICAL JSON RULES:
+def _validate(data):
+    if not isinstance(data,dict) or not isinstance(data.get("claims"),list): raise ValueError("Fact-check result must contain a claims list.")
+    if data.get("overall_status") not in {"PASS","REVIEW"}: raise ValueError("overall_status must be PASS or REVIEW.")
+    for i,c in enumerate(data["claims"],1):
+        if not isinstance(c,dict): raise ValueError(f"Claim {i} is not an object.")
+        for k in ("claim","classification","evidence","source"):
+            if not str(c.get(k,"")).strip(): raise ValueError(f"Claim {i} missing {k}.")
+        if c["classification"] not in ALLOWED: raise ValueError(f"Claim {i} has invalid classification.")
 
-- Use double quotes for all JSON keys and string values.
-- Escape quotation marks inside strings.
-- Do not place trailing commas.
-- Every object must have matching braces.
-- Every array must have matching brackets.
-- Return syntactically valid JSON.
-"""
-
-
-def run(
-    topic,
-    research,
-    evidence_dossier=None,
-    config=None,
-    qwen=None,
-):
-    """
-    Fact-check the evidence dossier.
-
-    Qwen performs the reasoning.
-    Python validates the returned structure.
-    """
-
-    if qwen is None:
-        raise ValueError(
-            "Qwen client is required for fact checking."
-        )
-
-    # Backward compatibility:
-    # Some pipeline versions may pass the dossier under
-    # a different variable or omit it.
-    if evidence_dossier is None:
-        evidence_dossier = research
-
-    prompt = build_prompt(
-        topic=topic,
-        research=research,
-        evidence_dossier=evidence_dossier,
-    )
-
-    last_error = None
-
-    for attempt in range(
-        1,
-        MAX_FACT_CHECK_ATTEMPTS + 1,
-    ):
-
-        print(
-            f"[FACT_CHECK] ATTEMPT "
-            f"{attempt}/{MAX_FACT_CHECK_ATTEMPTS}"
-        )
-
-        current_prompt = prompt
-
-        # ----------------------------------------------------
-        # After a failure, explicitly tell Qwen what went wrong.
-        # ----------------------------------------------------
-
-        if last_error is not None:
-
-            current_prompt += f"""
-
-PREVIOUS ATTEMPT FAILED.
-
-Parser error:
-{last_error}
-
-Generate the JSON again from scratch.
-
-Do not repair the previous response manually.
-Return ONLY a complete valid JSON object.
-"""
-
-        result = qwen.generate(
-            current_prompt,
-            max_new_tokens=2200,
-            temperature=0.15,
-        )
-
+def run(paths,job_id,topic,research=None,config=None,qwen=None):
+    if qwen is None: raise ValueError("Qwen client is required for fact checking.")
+    if not isinstance(research,dict): raise ValueError("Research dossier is missing or invalid.")
+    prompt=_prompt(topic,research); last=None
+    for attempt in range(1,MAX_ATTEMPTS+1):
+        print(f"[FACT_CHECK] ATTEMPT {attempt}/{MAX_ATTEMPTS}")
+        p=prompt if last is None else prompt+f"\n\nPrevious error: {last}\nRegenerate the COMPLETE compact JSON from scratch."
+        raw=qwen.generate(p,max_new_tokens=1600,temperature=0.15)
         try:
-
-            data = parse_json_response(result)
-
-            validate_fact_check(data)
-
-            print(
-                f"[FACT_CHECK] ACCEPTED | "
-                f"{len(data['claims'])} claims"
-            )
-
-            return data
-
-        except Exception as e:
-
-            last_error = str(e)
-
-            print(
-                f"[FACT_CHECK] ATTEMPT {attempt} "
-                f"FAILED | {last_error}"
-            )
-
-    raise ValueError(
-        f"Could not extract valid JSON after "
-        f"{MAX_FACT_CHECK_ATTEMPTS} attempts: "
-        f"{last_error}"
-    )
+            data=_extract_json(raw); _validate(data); data["checked_claim_count"]=len(data["claims"]); return data
+        except Exception as e: last=str(e); print(f"[FACT_CHECK] FAILED | {last}")
+    raise ValueError(f"Fact-check failed after {MAX_ATTEMPTS} attempts: {last}")
