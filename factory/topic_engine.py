@@ -97,6 +97,81 @@ def _topic_id(value):
 
     return "topic"
 
+def _script_prompt(topic, research, fact_check, config):
+    return f"""You are the documentary narrator for a short-form
+historical documentary about Black/African history, culture,
+technology, art, architecture, or mythology.
+
+TOPIC
+{topic.title}
+
+RESEARCH
+{json.dumps(research, ensure_ascii=False, indent=2)}
+
+SOURCE VERIFICATION
+{json.dumps(fact_check, ensure_ascii=False, indent=2)}
+
+Write the final narration for the documentary.
+
+NARRATION PHILOSOPHY
+
+Quality is more important than hitting an exact word count.
+
+The narration length should be determined by how much information is
+actually necessary to tell this particular story properly.
+
+Do NOT add filler simply to increase the word count.
+
+Do NOT remove important information merely to make the narration
+shorter.
+
+A very short topic may naturally have a short narration.
+
+A complex topic may naturally require a longer narration.
+
+The intended format is a fast-paced short documentary, generally
+around 1–2 minutes, but this is a soft target rather than a rigid
+word-count requirement.
+
+WRITING REQUIREMENTS
+
+1. Start with a strong hook.
+
+2. Make the narration informative and engaging.
+
+3. Prioritize specific historical details over vague statements.
+
+4. Include interesting lesser-known details when supported by the
+   research.
+
+5. Explain important context naturally rather than dumping facts.
+
+6. Maintain a clear beginning, development, and ending.
+
+7. Make the narration sound natural when spoken aloud.
+
+8. Avoid repetitive sentences.
+
+9. Avoid unnecessary introductions such as:
+   "Today we are going to talk about..."
+
+10. Do not invent facts.
+
+11. If the research contains scholarly uncertainty or competing
+    interpretations, represent that uncertainty accurately.
+
+12. Keep the narration focused on the topic.
+
+13. Do not pad the script to satisfy an arbitrary word target.
+
+Return ONLY the narration text.
+
+Do not return JSON.
+Do not add headings.
+Do not add scene labels.
+Do not add visual descriptions.
+"""
+
 
 def _topic_title(value):
     if isinstance(value, Topic):
