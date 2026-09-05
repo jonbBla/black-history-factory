@@ -1,12 +1,1 @@
-Review the research package below. For each claim:
-- Confirm or correct its classification (established_fact,
-  archaeological_evidence, scholarly_interpretation, oral_tradition,
-  mythology, uncertain).
-- Flag anything unsourced or low-confidence rather than silently
-  passing it through.
-- Do not invent sources or citations that are not in the input.
-
-Research package:
-{research_json}
-
-Return the corrected JSON package in the same shape.
+Verify the important research claims against the discovered source material. Return a compact PASS/REVIEW result with claims classified as verified, supported, uncertain, unsupported, false or misleading. Never invent sources. Do not regenerate the entire research package.

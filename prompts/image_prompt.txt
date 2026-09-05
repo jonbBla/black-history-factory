@@ -1,1 +1,1 @@
-Subject first, then period/region grounding, then the locked cinematic art direction and lighting. Preserve historically supported architecture, clothing, tools, materials, people and environment. Make the shot visually spectacular through composition, scale, depth, lighting and atmosphere—not invented history.
+The image processor reads visual_description directly from scenes.json. Generate an image only when that scene image does not already exist. Preserve period, region, attire, architecture, objects, materials and environment from the scene description.
