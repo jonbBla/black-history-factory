@@ -22,6 +22,13 @@ def _update_status(
     message,
     state="running",
 ):
+    """
+    Update the Qwen processor status.
+
+    This uses status.set_processor() only.
+    Do NOT use topic_engine.update_status() because
+    that function does not exist.
+    """
     try:
         status.set_processor(
             paths,
@@ -32,9 +39,7 @@ def _update_status(
             detail=message,
         )
     except Exception as e:
-        print(
-            f"[STATUS] WARNING | {e}"
-        )
+        print(f"[STATUS] WARNING | {e}")
 
 
 def _run_or_load(
@@ -43,15 +48,17 @@ def _run_or_load(
     job_id,
     fn,
 ):
-    existing = read_json(
-        path,
-        None,
-    )
+    """
+    Load an existing JSON output if it already exists.
+    Otherwise run the supplied function.
+    """
+
+    existing = read_json(path, None)
 
     if existing is not None:
         print(
             f"[QWEN] {job_id} | {label} | "
-            "existing output found -> skipping"
+            f"existing output found -> skipping"
         )
         return existing
 
@@ -65,14 +72,33 @@ def run_one(
     config,
     qwen,
 ):
+    """
+    Process one topic through the complete Qwen pipeline.
+
+    Workflow:
+
+        RANDOM TOPIC
+              ↓
+        SOURCE SEARCH
+              ↓
+        QWEN RESEARCH
+              ↓
+        SOURCE-BASED VERIFICATION
+              ↓
+        QWEN NARRATION
+              ↓
+        QWEN DETAILED INTELLIGENT SCENES
+              ↓
+        scenes.json
+    """
+
     try:
         print(
-            f"[QWEN] {job_id} | START | "
-            f"{topic.title}"
+            f"[QWEN] {job_id} | START | {topic.title}"
         )
 
         # ---------------------------------------------------------
-        # RESEARCH
+        # 1. RESEARCH
         # ---------------------------------------------------------
 
         _update_status(
@@ -96,7 +122,7 @@ def run_one(
         )
 
         # ---------------------------------------------------------
-        # FACT CHECK
+        # 2. FACT CHECK
         # ---------------------------------------------------------
 
         _update_status(
@@ -121,23 +147,19 @@ def run_one(
         )
 
         # ---------------------------------------------------------
-        # NARRATION
+        # 3. NARRATION
         # ---------------------------------------------------------
 
         _update_status(
             paths,
             job_id,
             "narration",
-            "Writing and validating narration",
+            "Writing narration from verified research",
         )
 
-        narration_path = paths.narration(
-            job_id
-        )
+        narration_path = paths.narration(job_id)
 
-        if os.path.exists(
-            narration_path
-        ):
+        if os.path.exists(narration_path):
             with open(
                 narration_path,
                 encoding="utf-8",
@@ -146,7 +168,7 @@ def run_one(
 
             print(
                 f"[QWEN] {job_id} | NARRATION | "
-                "existing output found -> skipping"
+                f"existing output found -> skipping"
             )
 
         else:
@@ -165,14 +187,17 @@ def run_one(
                 "Narration is empty."
             )
 
+        narration_words = script_engine.count_words(
+            narration
+        )
+
         print(
-            f"[QWEN] {job_id} | "
-            f"NARRATION WORDS: "
-            f"{script_engine.count_words(narration)}"
+            f"[QWEN] {job_id} | NARRATION WORDS: "
+            f"{narration_words}"
         )
 
         # ---------------------------------------------------------
-        # SCENES
+        # 4. INTELLIGENT SCENE PLANNING
         # ---------------------------------------------------------
 
         _update_status(
@@ -182,13 +207,10 @@ def run_one(
             "Qwen creating intelligent detailed scenes",
         )
 
-        scenes_path = paths.scenes(
-            job_id
-        )
+        scenes_path = paths.scenes(job_id)
 
-        if os.path.exists(
-            scenes_path
-        ):
+        if os.path.exists(scenes_path):
+
             scenes = read_json(
                 scenes_path,
                 None,
@@ -196,10 +218,11 @@ def run_one(
 
             print(
                 f"[QWEN] {job_id} | SCENES | "
-                "existing output found -> skipping"
+                f"existing output found -> skipping"
             )
 
         else:
+
             scenes = scene_engine.run(
                 paths=paths,
                 job_id=job_id,
@@ -211,56 +234,58 @@ def run_one(
             )
 
         # ---------------------------------------------------------
-        # SCENE VALIDATION
+        # 5. BASIC SCENE VALIDATION
         # ---------------------------------------------------------
         #
         # IMPORTANT:
-        # There is deliberately NO scene-count validation here.
+        # There is intentionally NO scene-count restriction here.
         #
         # Qwen decides how many scenes are appropriate.
-        # The scene engine validates coverage and structure.
         #
+        # We only verify that scene_engine returned a list.
+        # scene_engine itself validates sentence coverage,
+        # ordering, camera values, visual descriptions, etc.
         # ---------------------------------------------------------
 
-        if not isinstance(
-            scenes,
-            list,
-        ):
+        if not isinstance(scenes, list):
             raise ValueError(
-                "scenes.json must contain "
-                "a JSON list of scene objects."
+                "scenes.json must contain a JSON list "
+                "of scene objects."
             )
 
-        if not scenes:
+        scene_count = len(scenes)
+
+        if scene_count == 0:
             raise ValueError(
-                "Scene generation returned "
-                "an empty scene list."
+                "scenes.json contains no scenes."
             )
+
+        print(
+            f"[QWEN] {job_id} | SCENES: "
+            f"{scene_count}"
+        )
 
         # ---------------------------------------------------------
-        # COMPLETE
+        # 6. COMPLETE
         # ---------------------------------------------------------
 
         _update_status(
             paths,
             job_id,
             "complete",
-            f"Qwen complete | {len(scenes)} scenes",
+            (
+                f"Qwen complete | "
+                f"{scene_count} scenes | "
+                f"{narration_words} narration words"
+            ),
             state="idle",
         )
 
-        topic_engine.update_status(
-            paths,
-            job_id,
-            "QWEN_READY",
-            topic_id=topic.id,
-            title=topic.title,
-            scene_count=len(scenes),
-            narration_words=script_engine.count_words(
-                narration
-            ),
-        )
-
+        # Mark the topic as successfully used.
+        #
+        # IMPORTANT:
+        # topic_engine.update_status() does NOT exist.
+        # Do not call it here.
         topic_engine.mark_used(
             paths,
             topic,
@@ -268,10 +293,14 @@ def run_one(
 
         print(
             f"[QWEN] {job_id} | COMPLETE | "
-            f"{len(scenes)} scenes prepared"
+            f"{scene_count} scenes prepared"
         )
 
         return True
+
+    # -------------------------------------------------------------
+    # ERROR HANDLING
+    # -------------------------------------------------------------
 
     except Exception as e:
 
@@ -281,6 +310,9 @@ def run_one(
 
         traceback.print_exc()
 
+        # Update the processor status only.
+        # There is deliberately NO topic_engine.update_status()
+        # call here.
         _update_status(
             paths,
             job_id,
@@ -288,15 +320,5 @@ def run_one(
             str(e),
             state="error",
         )
-
-        try:
-            topic_engine.update_status(
-                paths,
-                job_id,
-                "QWEN_ERROR",
-                error=str(e),
-            )
-        except Exception:
-            pass
 
         return False
