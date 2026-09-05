@@ -1,26 +1,27 @@
 from pathlib import Path
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import json
 import random
-from datetime import datetime, timezone
+import re
 
 
-# ----------------------------------------------------------------------
+# ============================================================
 # HELPERS
-# ----------------------------------------------------------------------
+# ============================================================
 
 def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def _read_json(path, default):
+def _read_json(path, default=None):
     path = Path(path)
 
     if not path.exists():
         return default
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return default
 
@@ -29,31 +30,198 @@ def _write_json(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+
+    tmp.write_text(
+        json.dumps(
+            data,
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    tmp.replace(path)
 
 
-def _topic_title(topic):
+def _topic_title(value):
     """
-    Supports both dictionary topics and simple string topics.
+    Safely extract a topic title from:
+      - Topic object
+      - dict
+      - string
     """
-    if isinstance(topic, str):
-        return topic.strip()
+    if isinstance(value, Topic):
+        return str(value.title).strip()
 
-    if isinstance(topic, dict):
+    if isinstance(value, dict):
         return str(
-            topic.get("title")
-            or topic.get("topic")
-            or topic.get("name")
+            value.get("title")
+            or value.get("topic")
+            or value.get("name")
             or ""
         ).strip()
 
-    return str(topic).strip()
+    if isinstance(value, str):
+        return value.strip()
+
+    return ""
 
 
-# ----------------------------------------------------------------------
-# TOPIC FILES
-# ----------------------------------------------------------------------
+def _topic_category(value):
+    """
+    Safely extract a category.
+    """
+    if isinstance(value, Topic):
+        return str(value.category or "history").strip()
+
+    if isinstance(value, dict):
+        return str(
+            value.get("category")
+            or value.get("type")
+            or value.get("field")
+            or "history"
+        ).strip()
+
+    return "history"
+
+
+def _topic_description(value):
+    """
+    Safely extract a description.
+    """
+    if isinstance(value, Topic):
+        return str(value.description or "").strip()
+
+    if isinstance(value, dict):
+        return str(
+            value.get("description")
+            or value.get("summary")
+            or value.get("details")
+            or ""
+        ).strip()
+
+    return ""
+
+
+# ============================================================
+# TOPIC OBJECT
+# ============================================================
+
+@dataclass
+class Topic:
+    """
+    Topic passed through the Qwen pipeline.
+
+    The category field is intentionally included because
+    research_engine.py uses topic.category.
+    """
+
+    title: str
+    category: str = "history"
+    description: str = ""
+
+    # Preserve any additional metadata from topics.json.
+    metadata: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        self.title = str(self.title or "").strip()
+
+        self.category = str(
+            self.category or "history"
+        ).strip()
+
+        self.description = str(
+            self.description or ""
+        ).strip()
+
+        if not isinstance(self.metadata, dict):
+            self.metadata = {}
+
+    def to_dict(self):
+        data = dict(self.metadata)
+
+        data.update(
+            {
+                "title": self.title,
+                "category": self.category,
+                "description": self.description,
+            }
+        )
+
+        return data
+
+
+# ============================================================
+# TOPIC CONVERSION
+# ============================================================
+
+def _make_topic(value):
+    """
+    Convert a topics.json entry into a Topic object.
+
+    Supported input formats:
+
+        "Ewe Drumming and Dance Tradition"
+
+    or:
+
+        {
+            "title": "Ewe Drumming and Dance Tradition",
+            "category": "music",
+            "description": "..."
+        }
+    """
+
+    if isinstance(value, Topic):
+        return value
+
+    if isinstance(value, str):
+        return Topic(
+            title=value,
+            category="history",
+            description="",
+        )
+
+    if isinstance(value, dict):
+        title = (
+            value.get("title")
+            or value.get("topic")
+            or value.get("name")
+        )
+
+        if not title:
+            return None
+
+        category = (
+            value.get("category")
+            or value.get("type")
+            or value.get("field")
+            or "history"
+        )
+
+        description = (
+            value.get("description")
+            or value.get("summary")
+            or value.get("details")
+            or ""
+        )
+
+        metadata = dict(value)
+
+        return Topic(
+            title=title,
+            category=category,
+            description=description,
+            metadata=metadata,
+        )
+
+    return None
+
+
+# ============================================================
+# PATH HELPERS
+# ============================================================
 
 def _topics_path(paths):
     return Path(paths.root) / "01_TOPICS" / "topics.json"
@@ -71,14 +239,18 @@ def _rejected_path(paths):
     return Path(paths.root) / "01_TOPICS" / "rejected.json"
 
 
-# ----------------------------------------------------------------------
+# ============================================================
 # JOB ID
-# ----------------------------------------------------------------------
+# ============================================================
 
 def _next_job_id(paths):
     """
-    Find the next available BH###### job ID.
+    Find the next BH###### job ID.
+
+    Existing jobs are scanned so Colab restarts never cause
+    the job number to reset.
     """
+
     jobs_dir = Path(paths.root) / "02_JOBS"
     jobs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -88,22 +260,24 @@ def _next_job_id(paths):
         if not item.is_dir():
             continue
 
-        name = item.name.upper()
+        match = re.fullmatch(
+            r"BH(\d{6})",
+            item.name,
+            flags=re.IGNORECASE,
+        )
 
-        if not name.startswith("BH"):
-            continue
-
-        number = name[2:]
-
-        if number.isdigit():
-            highest = max(highest, int(number))
+        if match:
+            highest = max(
+                highest,
+                int(match.group(1)),
+            )
 
     return f"BH{highest + 1:06d}"
 
 
-# ----------------------------------------------------------------------
-# JOB STATUS
-# ----------------------------------------------------------------------
+# ============================================================
+# RESUMABLE JOBS
+# ============================================================
 
 RESUMABLE_STATUSES = {
     "QWEN_RESEARCHING",
@@ -114,19 +288,27 @@ RESUMABLE_STATUSES = {
     "SCENE_PLANNING",
     "QWEN_ERROR",
     "FAILED",
+    "ERROR",
 }
 
 
-# ----------------------------------------------------------------------
-# FIND RESUMABLE JOB
-# ----------------------------------------------------------------------
+def _manifest_status(manifest):
+    if not isinstance(manifest, dict):
+        return ""
+
+    return str(
+        manifest.get("status")
+        or manifest.get("stage")
+        or ""
+    ).upper().strip()
+
 
 def find_resumable_job(paths):
     """
-    Find an existing Qwen job that can be resumed.
+    Find the oldest incomplete Qwen job.
 
     Returns:
-        (topic, job_id)
+        (Topic, job_id)
 
     or:
 
@@ -149,9 +331,15 @@ def find_resumable_job(paths):
         if not manifest_path.exists():
             continue
 
-        manifest = _read_json(manifest_path, {})
+        manifest = _read_json(
+            manifest_path,
+            {},
+        )
 
-        status = str(manifest.get("status", "")).upper()
+        if not isinstance(manifest, dict):
+            continue
+
+        status = _manifest_status(manifest)
 
         if status not in RESUMABLE_STATUSES:
             continue
@@ -159,44 +347,65 @@ def find_resumable_job(paths):
         topic_data = manifest.get("topic")
 
         if topic_data is None:
-            topic_data = manifest.get("topic_data")
+            topic_data = {
+                "title": manifest.get("title", ""),
+                "category": manifest.get(
+                    "category",
+                    "history",
+                ),
+                "description": manifest.get(
+                    "description",
+                    "",
+                ),
+            }
 
-        if topic_data is None:
+        topic = _make_topic(topic_data)
+
+        if topic is None or not topic.title:
             continue
+
+        created = (
+            manifest.get("created_at")
+            or manifest.get("claimed_at")
+            or ""
+        )
 
         candidates.append(
             (
-                manifest.get("created_at", ""),
-                topic_data,
+                created,
                 job_dir.name,
+                topic,
             )
         )
 
     if not candidates:
         return None, None
 
-    # Resume the oldest incomplete job first.
-    candidates.sort(key=lambda x: x[0])
+    candidates.sort(
+        key=lambda item: (
+            item[0] or "",
+            item[1],
+        )
+    )
 
-    _, topic_data, job_id = candidates[0]
+    _, job_id, topic = candidates[0]
 
-    return _make_topic(topic_data), job_id
+    # Make absolutely sure the complete job tree exists.
+    paths.prepare_job(job_id)
+
+    return topic, job_id
 
 
-# ----------------------------------------------------------------------
-# CLAIM NEW TOPIC
-# ----------------------------------------------------------------------
+# ============================================================
+# CLAIM NEXT TOPIC
+# ============================================================
 
 def claim_next_topic(paths):
     """
-    Randomly select an unused topic and create a new job.
-
-    IMPORTANT:
-    The complete job directory structure is created automatically
-    through paths.prepare_job(job_id) BEFORE the job is returned.
+    Randomly claim an unused topic.
 
     Returns:
-        (topic, job_id)
+        (Topic, job_id)
 
     or:
 
@@ -205,217 +414,359 @@ def claim_next_topic(paths):
 
     paths.ensure_tree()
 
-    topics = _read_json(_topics_path(paths), [])
-    used = _read_json(_used_path(paths), [])
-    claimed = _read_json(_claimed_path(paths), {})
+    topics_data = _read_json(
+        _topics_path(paths),
+        [],
+    )
 
-    if not isinstance(topics, list):
-        topics = []
+    used_data = _read_json(
+        _used_path(paths),
+        [],
+    )
 
-    if not isinstance(used, list):
-        used = []
+    claimed_data = _read_json(
+        _claimed_path(paths),
+        {},
+    )
 
-    if not isinstance(claimed, dict):
-        claimed = {}
+    rejected_data = _read_json(
+        _rejected_path(paths),
+        [],
+    )
 
-    # Normalize used topic titles.
+    # --------------------------------------------------------
+    # Normalize tracking data
+    # --------------------------------------------------------
+
+    if not isinstance(topics_data, list):
+        topics_data = []
+
+    if not isinstance(used_data, list):
+        used_data = []
+
+    if not isinstance(claimed_data, dict):
+        claimed_data = {}
+
+    if not isinstance(rejected_data, list):
+        rejected_data = []
+
     used_titles = {
         _topic_title(item).lower()
-        for item in used
+        for item in used_data
         if _topic_title(item)
     }
 
-    # Normalize currently claimed topic titles.
-    claimed_titles = {
-        _topic_title(item.get("topic", item)).lower()
-        for item in claimed.values()
-        if _topic_title(item.get("topic", item))
-        if isinstance(item, (dict, str))
+    rejected_titles = {
+        _topic_title(item).lower()
+        for item in rejected_data
+        if _topic_title(item)
     }
 
-    # Build list of available topics.
+    claimed_titles = set()
+
+    for item in claimed_data.values():
+        if isinstance(item, dict):
+            title = _topic_title(
+                item.get("topic", item)
+            )
+        else:
+            title = _topic_title(item)
+
+        if title:
+            claimed_titles.add(
+                title.lower()
+            )
+
+    # --------------------------------------------------------
+    # Convert all available topics
+    # --------------------------------------------------------
+
     available = []
 
-    for item in topics:
-        title = _topic_title(item)
+    for raw_topic in topics_data:
+        topic = _make_topic(raw_topic)
 
-        if not title:
+        if topic is None:
             continue
 
-        title_key = title.lower()
+        if not topic.title:
+            continue
+
+        title_key = topic.title.lower()
 
         if title_key in used_titles:
+            continue
+
+        if title_key in rejected_titles:
             continue
 
         if title_key in claimed_titles:
             continue
 
-        available.append(item)
+        available.append(topic)
 
     if not available:
         return None, None
 
-    # --------------------------------------------------------------
-    # RANDOM TOPIC SELECTION
-    # --------------------------------------------------------------
+    # --------------------------------------------------------
+    # RANDOM TOPIC
+    # --------------------------------------------------------
 
-    topic_data = random.choice(available)
-    topic = _make_topic(topic_data)
+    topic = random.choice(available)
 
-    # --------------------------------------------------------------
+    # --------------------------------------------------------
     # CREATE JOB
-    # --------------------------------------------------------------
+    # --------------------------------------------------------
 
     job_id = _next_job_id(paths)
 
-    # THIS IS THE PERMANENT DIRECTORY FIX.
+    # This is deliberately done BEFORE writing the manifest.
+    # It prevents errors such as:
     #
-    # It creates:
+    # FileNotFoundError:
+    # .../02_script/narration.txt
     #
-    # BH000001/
-    # ├── 01_research/
-    # ├── 02_script/
-    # ├── 03_scenes/
-    # ├── 04_images/
-    # ├── 05_audio/
-    # ├── 06_video/
-    # ├── 06_video/clips/
-    # ├── 07_thumbnail/
-    # └── state/
-    #
-    # before any processor tries to write an artifact.
     paths.prepare_job(job_id)
 
-    job_dir = Path(paths.job(job_id))
+    # --------------------------------------------------------
+    # Job manifest
+    # --------------------------------------------------------
 
-    # --------------------------------------------------------------
-    # JOB MANIFEST
-    # --------------------------------------------------------------
+    now = _now()
 
     manifest = {
         "job_id": job_id,
-        "topic": topic_data,
-        "topic_title": topic.title,
+        "title": topic.title,
+        "category": topic.category,
+        "description": topic.description,
+        "topic": topic.to_dict(),
         "status": "QWEN_RESEARCHING",
-        "created_at": _now(),
-        "updated_at": _now(),
-        "processor": "qwen",
+        "created_at": now,
+        "claimed_at": now,
+        "updated_at": now,
     }
 
-    _write_json(paths.manifest(job_id), manifest)
+    _write_json(
+        Path(paths.root)
+        / "02_JOBS"
+        / job_id
+        / "job.json",
+        manifest,
+    )
 
-    # --------------------------------------------------------------
-    # CLAIMED TOPIC TRACKING
-    # --------------------------------------------------------------
+    # --------------------------------------------------------
+    # Claimed topic record
+    # --------------------------------------------------------
 
-    claimed[job_id] = {
+    claimed_data[job_id] = {
         "job_id": job_id,
-        "topic": topic_data,
-        "topic_title": topic.title,
-        "claimed_at": _now(),
-        "status": "QWEN_RESEARCHING",
+        "topic": topic.to_dict(),
+        "title": topic.title,
+        "category": topic.category,
+        "claimed_at": now,
     }
 
-    _write_json(_claimed_path(paths), claimed)
+    _write_json(
+        _claimed_path(paths),
+        claimed_data,
+    )
 
     return topic, job_id
 
 
-# ----------------------------------------------------------------------
-# MARK TOPIC USED
-# ----------------------------------------------------------------------
+# ============================================================
+# MARK USED
+# ============================================================
 
 def mark_used(paths, job_id, topic=None):
     """
-    Mark a topic as successfully processed/used.
+    Mark a topic as successfully used.
 
-    Removes it from claimed.json and adds it to used.json.
+    Removes it from claimed topics and adds it to used.json.
     """
 
-    used = _read_json(_used_path(paths), [])
-    claimed = _read_json(_claimed_path(paths), {})
+    paths.ensure_tree()
 
-    if not isinstance(used, list):
-        used = []
+    used_data = _read_json(
+        _used_path(paths),
+        [],
+    )
 
-    if not isinstance(claimed, dict):
-        claimed = {}
+    claimed_data = _read_json(
+        _claimed_path(paths),
+        {},
+    )
+
+    if not isinstance(used_data, list):
+        used_data = []
+
+    if not isinstance(claimed_data, dict):
+        claimed_data = {}
+
+    # If topic wasn't supplied, recover it from claimed.json.
+    if topic is None:
+        record = claimed_data.get(job_id)
+
+        if isinstance(record, dict):
+            topic = _make_topic(
+                record.get(
+                    "topic",
+                    record,
+                )
+            )
 
     if topic is None:
-        claim = claimed.get(job_id)
-
-        if isinstance(claim, dict):
-            topic = claim.get("topic", claim.get("topic_title"))
-
-    if topic is not None:
-        title = _topic_title(topic)
-
-        # Avoid duplicate entries.
-        existing = {
-            _topic_title(item).lower()
-            for item in used
-            if _topic_title(item)
-        }
-
-        if title and title.lower() not in existing:
-            used.append(topic)
-
-    claimed.pop(job_id, None)
-
-    _write_json(_used_path(paths), used)
-    _write_json(_claimed_path(paths), claimed)
-
-    # Update manifest if the job exists.
-    manifest_path = paths.manifest(job_id)
-
-    if manifest_path.exists():
-        manifest = _read_json(manifest_path, {})
-
-        if isinstance(manifest, dict):
-            manifest["status"] = "USED"
-            manifest["updated_at"] = _now()
-            _write_json(manifest_path, manifest)
-
-
-# ----------------------------------------------------------------------
-# TOPIC OBJECT
-# ----------------------------------------------------------------------
-
-class Topic:
-    """
-    Lightweight topic object used by the processors.
-    """
-
-    def __init__(self, title, data=None):
-        self.title = str(title).strip()
-        self.data = data if isinstance(data, dict) else {}
-
-    def __str__(self):
-        return self.title
-
-    def __repr__(self):
-        return f"Topic(title={self.title!r})"
-
-
-def _make_topic(data):
-    """
-    Convert a topic entry into the Topic object expected by
-    qwen_pipeline.py.
-    """
-
-    if isinstance(data, str):
-        return Topic(data, {"title": data})
-
-    if isinstance(data, dict):
-        title = (
-            data.get("title")
-            or data.get("topic")
-            or data.get("name")
-            or ""
+        manifest = _read_json(
+            Path(paths.root)
+            / "02_JOBS"
+            / str(job_id)
+            / "job.json",
+            {},
         )
 
-        return Topic(title, data)
+        if isinstance(manifest, dict):
+            topic = _make_topic(
+                manifest.get(
+                    "topic",
+                    manifest,
+                )
+            )
 
-    title = str(data).strip()
+    if topic is None:
+        return False
 
-    return Topic(title, {"title": title})
+    # Avoid duplicate used entries.
+    existing_titles = {
+        _topic_title(item).lower()
+        for item in used_data
+        if _topic_title(item)
+    }
+
+    if topic.title.lower() not in existing_titles:
+        used_data.append(
+            {
+                "job_id": job_id,
+                "title": topic.title,
+                "category": topic.category,
+                "description": topic.description,
+                "used_at": _now(),
+            }
+        )
+
+    _write_json(
+        _used_path(paths),
+        used_data,
+    )
+
+    # Remove from claimed.
+    claimed_data.pop(
+        str(job_id),
+        None,
+    )
+
+    _write_json(
+        _claimed_path(paths),
+        claimed_data,
+    )
+
+    # Update job manifest.
+    manifest_path = (
+        Path(paths.root)
+        / "02_JOBS"
+        / str(job_id)
+        / "job.json"
+    )
+
+    manifest = _read_json(
+        manifest_path,
+        {},
+    )
+
+    if isinstance(manifest, dict):
+        manifest["status"] = "USED"
+        manifest["updated_at"] = _now()
+        manifest["used_at"] = _now()
+
+        _write_json(
+            manifest_path,
+            manifest,
+        )
+
+    return True
+
+
+# ============================================================
+# MARK REJECTED
+# ============================================================
+
+def mark_rejected(paths, job_id, topic=None, reason=""):
+    """
+    Mark a topic as rejected so it will not be selected again.
+    """
+
+    paths.ensure_tree()
+
+    rejected_data = _read_json(
+        _rejected_path(paths),
+        [],
+    )
+
+    claimed_data = _read_json(
+        _claimed_path(paths),
+        {},
+    )
+
+    if not isinstance(rejected_data, list):
+        rejected_data = []
+
+    if not isinstance(claimed_data, dict):
+        claimed_data = {}
+
+    if topic is None:
+        record = claimed_data.get(job_id)
+
+        if isinstance(record, dict):
+            topic = _make_topic(
+                record.get(
+                    "topic",
+                    record,
+                )
+            )
+
+    if topic is None:
+        return False
+
+    existing_titles = {
+        _topic_title(item).lower()
+        for item in rejected_data
+        if _topic_title(item)
+    }
+
+    if topic.title.lower() not in existing_titles:
+        rejected_data.append(
+            {
+                "job_id": job_id,
+                "title": topic.title,
+                "category": topic.category,
+                "description": topic.description,
+                "reason": reason,
+                "rejected_at": _now(),
+            }
+        )
+
+    _write_json(
+        _rejected_path(paths),
+        rejected_data,
+    )
+
+    claimed_data.pop(
+        str(job_id),
+        None,
+    )
+
+    _write_json(
+        _claimed_path(paths),
+        claimed_data,
+    )
+
+    return True
