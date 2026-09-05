@@ -44,13 +44,61 @@ def _write_json(path, data):
     tmp.replace(path)
 
 
+def _slugify(text):
+    """
+    Create a stable identifier from a topic title.
+    """
+    text = str(text or "").strip().lower()
+
+    text = re.sub(
+        r"[^a-z0-9]+",
+        "-",
+        text,
+    )
+
+    text = re.sub(
+        r"-+",
+        "-",
+        text,
+    ).strip("-")
+
+    return text or "topic"
+
+
+# ============================================================
+# TOPIC FIELD EXTRACTION
+# ============================================================
+
+def _topic_id(value):
+    if isinstance(value, Topic):
+        return str(value.id).strip()
+
+    if isinstance(value, dict):
+        value_id = (
+            value.get("id")
+            or value.get("topic_id")
+            or value.get("slug")
+        )
+
+        if value_id:
+            return str(value_id).strip()
+
+        title = (
+            value.get("title")
+            or value.get("topic")
+            or value.get("name")
+            or ""
+        )
+
+        return _slugify(title)
+
+    if isinstance(value, str):
+        return _slugify(value)
+
+    return "topic"
+
+
 def _topic_title(value):
-    """
-    Safely extract a topic title from:
-      - Topic object
-      - dict
-      - string
-    """
     if isinstance(value, Topic):
         return str(value.title).strip()
 
@@ -69,11 +117,10 @@ def _topic_title(value):
 
 
 def _topic_category(value):
-    """
-    Safely extract a category.
-    """
     if isinstance(value, Topic):
-        return str(value.category or "history").strip()
+        return str(
+            value.category or "history"
+        ).strip()
 
     if isinstance(value, dict):
         return str(
@@ -86,18 +133,52 @@ def _topic_category(value):
     return "history"
 
 
-def _topic_description(value):
-    """
-    Safely extract a description.
-    """
+def _topic_region(value):
     if isinstance(value, Topic):
-        return str(value.description or "").strip()
+        return str(
+            value.region or "Not specified"
+        ).strip()
+
+    if isinstance(value, dict):
+        return str(
+            value.get("region")
+            or value.get("location")
+            or value.get("geographic_region")
+            or "Not specified"
+        ).strip()
+
+    return "Not specified"
+
+
+def _topic_period(value):
+    if isinstance(value, Topic):
+        return str(
+            value.period or "Not specified"
+        ).strip()
+
+    if isinstance(value, dict):
+        return str(
+            value.get("period")
+            or value.get("era")
+            or value.get("time_period")
+            or "Not specified"
+        ).strip()
+
+    return "Not specified"
+
+
+def _topic_description(value):
+    if isinstance(value, Topic):
+        return str(
+            value.description or ""
+        ).strip()
 
     if isinstance(value, dict):
         return str(
             value.get("description")
             or value.get("summary")
             or value.get("details")
+            or value.get("angle")
             or ""
         ).strip()
 
@@ -111,24 +192,47 @@ def _topic_description(value):
 @dataclass
 class Topic:
     """
-    Topic passed through the Qwen pipeline.
+    Complete topic object used by the Qwen pipeline.
 
-    The category field is intentionally included because
-    research_engine.py uses topic.category.
+    research_engine.py expects:
+
+        topic.id
+        topic.title
+        topic.category
+        topic.region
+        topic.period
+        topic.description
     """
 
+    id: str
     title: str
     category: str = "history"
+    region: str = "Not specified"
+    period: str = "Not specified"
     description: str = ""
 
-    # Preserve any additional metadata from topics.json.
+    # Preserve any additional fields from topics.json.
     metadata: dict = field(default_factory=dict)
 
     def __post_init__(self):
-        self.title = str(self.title or "").strip()
+        self.id = str(
+            self.id or _slugify(self.title)
+        ).strip()
+
+        self.title = str(
+            self.title or ""
+        ).strip()
 
         self.category = str(
             self.category or "history"
+        ).strip()
+
+        self.region = str(
+            self.region or "Not specified"
+        ).strip()
+
+        self.period = str(
+            self.period or "Not specified"
         ).strip()
 
         self.description = str(
@@ -139,12 +243,19 @@ class Topic:
             self.metadata = {}
 
     def to_dict(self):
+        """
+        Convert the Topic back to a JSON-compatible object.
+        """
+
         data = dict(self.metadata)
 
         data.update(
             {
+                "id": self.id,
                 "title": self.title,
                 "category": self.category,
+                "region": self.region,
+                "period": self.period,
                 "description": self.description,
             }
         )
@@ -158,32 +269,56 @@ class Topic:
 
 def _make_topic(value):
     """
-    Convert a topics.json entry into a Topic object.
+    Convert a topic entry into a complete Topic object.
 
-    Supported input formats:
+    Supported:
 
-        "Ewe Drumming and Dance Tradition"
+        "Venda Reed-Pipe Ensemble Music"
 
     or:
 
         {
-            "title": "Ewe Drumming and Dance Tradition",
+            "id": "venda-reed-pipe-ensemble-music",
+            "title": "Venda Reed-Pipe Ensemble Music",
             "category": "music",
+            "region": "Southern Africa",
+            "period": "20th century",
             "description": "..."
         }
+
+    Missing region/period are NOT guessed.
+    They become "Not specified" so Qwen research can establish them.
     """
 
     if isinstance(value, Topic):
         return value
 
+    # --------------------------------------------------------
+    # Simple string topic
+    # --------------------------------------------------------
+
     if isinstance(value, str):
+        title = value.strip()
+
+        if not title:
+            return None
+
         return Topic(
-            title=value,
+            id=_slugify(title),
+            title=title,
             category="history",
+            region="Not specified",
+            period="Not specified",
             description="",
+            metadata={},
         )
 
+    # --------------------------------------------------------
+    # Dictionary topic
+    # --------------------------------------------------------
+
     if isinstance(value, dict):
+
         title = (
             value.get("title")
             or value.get("topic")
@@ -193,6 +328,15 @@ def _make_topic(value):
         if not title:
             return None
 
+        title = str(title).strip()
+
+        topic_id = (
+            value.get("id")
+            or value.get("topic_id")
+            or value.get("slug")
+            or _slugify(title)
+        )
+
         category = (
             value.get("category")
             or value.get("type")
@@ -200,19 +344,37 @@ def _make_topic(value):
             or "history"
         )
 
+        region = (
+            value.get("region")
+            or value.get("location")
+            or value.get("geographic_region")
+            or "Not specified"
+        )
+
+        period = (
+            value.get("period")
+            or value.get("era")
+            or value.get("time_period")
+            or "Not specified"
+        )
+
         description = (
             value.get("description")
             or value.get("summary")
             or value.get("details")
+            or value.get("angle")
             or ""
         )
 
         metadata = dict(value)
 
         return Topic(
+            id=str(topic_id).strip(),
             title=title,
-            category=category,
-            description=description,
+            category=str(category).strip(),
+            region=str(region).strip(),
+            period=str(period).strip(),
+            description=str(description).strip(),
             metadata=metadata,
         )
 
@@ -224,19 +386,35 @@ def _make_topic(value):
 # ============================================================
 
 def _topics_path(paths):
-    return Path(paths.root) / "01_TOPICS" / "topics.json"
+    return (
+        Path(paths.root)
+        / "01_TOPICS"
+        / "topics.json"
+    )
 
 
 def _used_path(paths):
-    return Path(paths.root) / "01_TOPICS" / "used.json"
+    return (
+        Path(paths.root)
+        / "01_TOPICS"
+        / "used.json"
+    )
 
 
 def _claimed_path(paths):
-    return Path(paths.root) / "01_TOPICS" / "claimed.json"
+    return (
+        Path(paths.root)
+        / "01_TOPICS"
+        / "claimed.json"
+    )
 
 
 def _rejected_path(paths):
-    return Path(paths.root) / "01_TOPICS" / "rejected.json"
+    return (
+        Path(paths.root)
+        / "01_TOPICS"
+        / "rejected.json"
+    )
 
 
 # ============================================================
@@ -247,16 +425,24 @@ def _next_job_id(paths):
     """
     Find the next BH###### job ID.
 
-    Existing jobs are scanned so Colab restarts never cause
-    the job number to reset.
+    Existing jobs are scanned so Colab restarts do not
+    reset the numbering.
     """
 
-    jobs_dir = Path(paths.root) / "02_JOBS"
-    jobs_dir.mkdir(parents=True, exist_ok=True)
+    jobs_dir = (
+        Path(paths.root)
+        / "02_JOBS"
+    )
+
+    jobs_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     highest = 0
 
     for item in jobs_dir.iterdir():
+
         if not item.is_dir():
             continue
 
@@ -308,6 +494,7 @@ def find_resumable_job(paths):
     Find the oldest incomplete Qwen job.
 
     Returns:
+
         (Topic, job_id)
 
     or:
@@ -315,7 +502,10 @@ def find_resumable_job(paths):
         (None, None)
     """
 
-    jobs_dir = Path(paths.root) / "02_JOBS"
+    jobs_dir = (
+        Path(paths.root)
+        / "02_JOBS"
+    )
 
     if not jobs_dir.exists():
         return None, None
@@ -323,10 +513,13 @@ def find_resumable_job(paths):
     candidates = []
 
     for job_dir in jobs_dir.iterdir():
+
         if not job_dir.is_dir():
             continue
 
-        manifest_path = job_dir / "job.json"
+        manifest_path = (
+            job_dir / "job.json"
+        )
 
         if not manifest_path.exists():
             continue
@@ -339,19 +532,48 @@ def find_resumable_job(paths):
         if not isinstance(manifest, dict):
             continue
 
-        status = _manifest_status(manifest)
+        status = _manifest_status(
+            manifest
+        )
 
         if status not in RESUMABLE_STATUSES:
             continue
 
-        topic_data = manifest.get("topic")
+        # ----------------------------------------------------
+        # Recover topic
+        # ----------------------------------------------------
+
+        topic_data = manifest.get(
+            "topic"
+        )
 
         if topic_data is None:
             topic_data = {
-                "title": manifest.get("title", ""),
+                "id": manifest.get(
+                    "topic_id"
+                ) or manifest.get(
+                    "id"
+                ) or _slugify(
+                    manifest.get(
+                        "title",
+                        "",
+                    )
+                ),
+                "title": manifest.get(
+                    "title",
+                    "",
+                ),
                 "category": manifest.get(
                     "category",
                     "history",
+                ),
+                "region": manifest.get(
+                    "region",
+                    "Not specified",
+                ),
+                "period": manifest.get(
+                    "period",
+                    "Not specified",
                 ),
                 "description": manifest.get(
                     "description",
@@ -359,10 +581,44 @@ def find_resumable_job(paths):
                 ),
             }
 
-        topic = _make_topic(topic_data)
+        topic = _make_topic(
+            topic_data
+        )
 
-        if topic is None or not topic.title:
+        if topic is None:
             continue
+
+        if not topic.title:
+            continue
+
+        # ----------------------------------------------------
+        # Preserve fields that may exist directly in manifest
+        # but were absent from older topic records.
+        # ----------------------------------------------------
+
+        if (
+            topic.region == "Not specified"
+            and manifest.get("region")
+        ):
+            topic.region = str(
+                manifest["region"]
+            ).strip()
+
+        if (
+            topic.period == "Not specified"
+            and manifest.get("period")
+        ):
+            topic.period = str(
+                manifest["period"]
+            ).strip()
+
+        if (
+            topic.category == "history"
+            and manifest.get("category")
+        ):
+            topic.category = str(
+                manifest["category"]
+            ).strip()
 
         created = (
             manifest.get("created_at")
@@ -390,7 +646,7 @@ def find_resumable_job(paths):
 
     _, job_id, topic = candidates[0]
 
-    # Make absolutely sure the complete job tree exists.
+    # Ensure every required job directory exists.
     paths.prepare_job(job_id)
 
     return topic, job_id
@@ -405,6 +661,7 @@ def claim_next_topic(paths):
     Randomly claim an unused topic.
 
     Returns:
+
         (Topic, job_id)
 
     or:
@@ -438,16 +695,28 @@ def claim_next_topic(paths):
     # Normalize tracking data
     # --------------------------------------------------------
 
-    if not isinstance(topics_data, list):
+    if not isinstance(
+        topics_data,
+        list,
+    ):
         topics_data = []
 
-    if not isinstance(used_data, list):
+    if not isinstance(
+        used_data,
+        list,
+    ):
         used_data = []
 
-    if not isinstance(claimed_data, dict):
+    if not isinstance(
+        claimed_data,
+        dict,
+    ):
         claimed_data = {}
 
-    if not isinstance(rejected_data, list):
+    if not isinstance(
+        rejected_data,
+        list,
+    ):
         rejected_data = []
 
     used_titles = {
@@ -465,9 +734,13 @@ def claim_next_topic(paths):
     claimed_titles = set()
 
     for item in claimed_data.values():
+
         if isinstance(item, dict):
             title = _topic_title(
-                item.get("topic", item)
+                item.get(
+                    "topic",
+                    item,
+                )
             )
         else:
             title = _topic_title(item)
@@ -478,13 +751,16 @@ def claim_next_topic(paths):
             )
 
     # --------------------------------------------------------
-    # Convert all available topics
+    # Build available topic list
     # --------------------------------------------------------
 
     available = []
 
     for raw_topic in topics_data:
-        topic = _make_topic(raw_topic)
+
+        topic = _make_topic(
+            raw_topic
+        )
 
         if topic is None:
             continue
@@ -492,7 +768,9 @@ def claim_next_topic(paths):
         if not topic.title:
             continue
 
-        title_key = topic.title.lower()
+        title_key = (
+            topic.title.lower()
+        )
 
         if title_key in used_titles:
             continue
@@ -512,37 +790,53 @@ def claim_next_topic(paths):
     # RANDOM TOPIC
     # --------------------------------------------------------
 
-    topic = random.choice(available)
+    topic = random.choice(
+        available
+    )
 
     # --------------------------------------------------------
     # CREATE JOB
     # --------------------------------------------------------
 
-    job_id = _next_job_id(paths)
+    job_id = _next_job_id(
+        paths
+    )
 
-    # This is deliberately done BEFORE writing the manifest.
-    # It prevents errors such as:
-    #
-    # FileNotFoundError:
-    # .../02_script/narration.txt
-    #
-    paths.prepare_job(job_id)
+    # IMPORTANT:
+    # Create all job folders before any processor writes.
+    paths.prepare_job(
+        job_id
+    )
+
+    now = _now()
 
     # --------------------------------------------------------
     # Job manifest
     # --------------------------------------------------------
 
-    now = _now()
-
     manifest = {
         "job_id": job_id,
+
+        "topic_id": topic.id,
+
         "title": topic.title,
+
         "category": topic.category,
+
+        "region": topic.region,
+
+        "period": topic.period,
+
         "description": topic.description,
+
         "topic": topic.to_dict(),
+
         "status": "QWEN_RESEARCHING",
+
         "created_at": now,
+
         "claimed_at": now,
+
         "updated_at": now,
     }
 
@@ -560,9 +854,19 @@ def claim_next_topic(paths):
 
     claimed_data[job_id] = {
         "job_id": job_id,
+
+        "topic_id": topic.id,
+
         "topic": topic.to_dict(),
+
         "title": topic.title,
+
         "category": topic.category,
+
+        "region": topic.region,
+
+        "period": topic.period,
+
         "claimed_at": now,
     }
 
@@ -578,11 +882,13 @@ def claim_next_topic(paths):
 # MARK USED
 # ============================================================
 
-def mark_used(paths, job_id, topic=None):
+def mark_used(
+    paths,
+    job_id,
+    topic=None,
+):
     """
     Mark a topic as successfully used.
-
-    Removes it from claimed topics and adds it to used.json.
     """
 
     paths.ensure_tree()
@@ -597,17 +903,32 @@ def mark_used(paths, job_id, topic=None):
         {},
     )
 
-    if not isinstance(used_data, list):
+    if not isinstance(
+        used_data,
+        list,
+    ):
         used_data = []
 
-    if not isinstance(claimed_data, dict):
+    if not isinstance(
+        claimed_data,
+        dict,
+    ):
         claimed_data = {}
 
-    # If topic wasn't supplied, recover it from claimed.json.
-    if topic is None:
-        record = claimed_data.get(job_id)
+    # --------------------------------------------------------
+    # Recover topic if necessary
+    # --------------------------------------------------------
 
-        if isinstance(record, dict):
+    if topic is None:
+
+        record = claimed_data.get(
+            job_id
+        )
+
+        if isinstance(
+            record,
+            dict,
+        ):
             topic = _make_topic(
                 record.get(
                     "topic",
@@ -616,6 +937,7 @@ def mark_used(paths, job_id, topic=None):
             )
 
     if topic is None:
+
         manifest = _read_json(
             Path(paths.root)
             / "02_JOBS"
@@ -624,7 +946,10 @@ def mark_used(paths, job_id, topic=None):
             {},
         )
 
-        if isinstance(manifest, dict):
+        if isinstance(
+            manifest,
+            dict,
+        ):
             topic = _make_topic(
                 manifest.get(
                     "topic",
@@ -635,138 +960,8 @@ def mark_used(paths, job_id, topic=None):
     if topic is None:
         return False
 
-    # Avoid duplicate used entries.
-    existing_titles = {
-        _topic_title(item).lower()
-        for item in used_data
-        if _topic_title(item)
-    }
+    # --------------------------------------------------------
+    # Avoid duplicates
+    # --------------------------------------------------------
 
-    if topic.title.lower() not in existing_titles:
-        used_data.append(
-            {
-                "job_id": job_id,
-                "title": topic.title,
-                "category": topic.category,
-                "description": topic.description,
-                "used_at": _now(),
-            }
-        )
-
-    _write_json(
-        _used_path(paths),
-        used_data,
-    )
-
-    # Remove from claimed.
-    claimed_data.pop(
-        str(job_id),
-        None,
-    )
-
-    _write_json(
-        _claimed_path(paths),
-        claimed_data,
-    )
-
-    # Update job manifest.
-    manifest_path = (
-        Path(paths.root)
-        / "02_JOBS"
-        / str(job_id)
-        / "job.json"
-    )
-
-    manifest = _read_json(
-        manifest_path,
-        {},
-    )
-
-    if isinstance(manifest, dict):
-        manifest["status"] = "USED"
-        manifest["updated_at"] = _now()
-        manifest["used_at"] = _now()
-
-        _write_json(
-            manifest_path,
-            manifest,
-        )
-
-    return True
-
-
-# ============================================================
-# MARK REJECTED
-# ============================================================
-
-def mark_rejected(paths, job_id, topic=None, reason=""):
-    """
-    Mark a topic as rejected so it will not be selected again.
-    """
-
-    paths.ensure_tree()
-
-    rejected_data = _read_json(
-        _rejected_path(paths),
-        [],
-    )
-
-    claimed_data = _read_json(
-        _claimed_path(paths),
-        {},
-    )
-
-    if not isinstance(rejected_data, list):
-        rejected_data = []
-
-    if not isinstance(claimed_data, dict):
-        claimed_data = {}
-
-    if topic is None:
-        record = claimed_data.get(job_id)
-
-        if isinstance(record, dict):
-            topic = _make_topic(
-                record.get(
-                    "topic",
-                    record,
-                )
-            )
-
-    if topic is None:
-        return False
-
-    existing_titles = {
-        _topic_title(item).lower()
-        for item in rejected_data
-        if _topic_title(item)
-    }
-
-    if topic.title.lower() not in existing_titles:
-        rejected_data.append(
-            {
-                "job_id": job_id,
-                "title": topic.title,
-                "category": topic.category,
-                "description": topic.description,
-                "reason": reason,
-                "rejected_at": _now(),
-            }
-        )
-
-    _write_json(
-        _rejected_path(paths),
-        rejected_data,
-    )
-
-    claimed_data.pop(
-        str(job_id),
-        None,
-    )
-
-    _write_json(
-        _claimed_path(paths),
-        claimed_data,
-    )
-
-    return True
+    existing_titles =
