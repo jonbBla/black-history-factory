@@ -1,44 +1,236 @@
-from __future__ import annotations
-import os
-from dataclasses import dataclass
-SUBFOLDERS=["00_CONFIG","01_TOPICS","02_JOBS","04_AUDIO_LIBRARY/music","04_AUDIO_LIBRARY/ambience","04_AUDIO_LIBRARY/sfx","05_OUTPUT/completed","05_OUTPUT/failed","06_STATUS","07_LOGS"]
-@dataclass
+from pathlib import Path
+from google.colab import drive
+
+
 class DrivePaths:
-    root:str
-    def __call__(self,*parts): return os.path.join(self.root,*parts)
+    """
+    Centralized Google Drive paths for Black History Factory.
+
+    Every processor uses this class so that all four processors
+    agree on exactly where job artifacts are stored.
+    """
+
+    SUBFOLDERS = [
+        "00_CONFIG",
+        "01_TOPICS",
+        "02_JOBS",
+        "03_AUDIO_LIBRARY/music",
+        "03_AUDIO_LIBRARY/ambience",
+        "03_AUDIO_LIBRARY/sfx",
+        "04_OUTPUT/completed",
+        "04_OUTPUT/failed",
+        "05_STATUS",
+        "06_LOGS",
+    ]
+
+    JOB_SUBFOLDERS = [
+        "01_research",
+        "02_script",
+        "03_scenes",
+        "04_images",
+        "05_audio",
+        "06_video",
+        "06_video/clips",
+        "07_thumbnail",
+        "state",
+    ]
+
+    def __init__(self, root):
+        self.root = Path(root)
+
+    # ------------------------------------------------------------------
+    # DRIVE SETUP
+    # ------------------------------------------------------------------
+
     def ensure_tree(self):
-        for p in SUBFOLDERS: os.makedirs(self(p),exist_ok=True)
-    @property
-    def topics_json(self): return self("01_TOPICS","topics.json")
-    @property
-    def used_topics_json(self): return self("01_TOPICS","used_topics.json")
-    @property
-    def rejected_topics_json(self): return self("01_TOPICS","rejected_topics.json")
-    @property
-    def status_current(self): return self("06_STATUS","current.json")
-    @property
-    def status_history(self): return self("06_STATUS","history.json")
-    def job(self,j): return self("02_JOBS",j)
-    def state(self,j,p): return self("02_JOBS",j,"state",p+".json")
-    def manifest(self,j): return self("02_JOBS",j,"job.json")
-    def research(self,j): return self("02_JOBS",j,"01_research","research.json")
-    def research_raw(self,j): return self.research(j)
-    def verified(self,j): return self("02_JOBS",j,"01_research","verified.json")
-    def research_verified(self,j): return self.verified(j)
-    def sources(self,j): return self("02_JOBS",j,"01_research","sources.json")
-    def narration(self,j): return self("02_JOBS",j,"02_script","narration.txt")
-    def script(self,j): return self("02_JOBS",j,"02_script","script.json")
-    def visual_bible(self,j): return self("02_JOBS",j,"02_script","visual_bible.json")
-    def scenes(self,j): return self("02_JOBS",j,"03_scenes","scenes.json")
-    def images_dir(self,j): return self("02_JOBS",j,"04_images")
-    def audio_dir(self,j): return self("02_JOBS",j,"05_audio")
-    def audio_final(self,j): return self("02_JOBS",j,"05_audio","final_mix.wav")
-    def video_dir(self,j): return self("02_JOBS",j,"06_video")
-    def video_clips_dir(self,j): return self("02_JOBS",j,"06_video","clips")
-    def video_render(self,j): return self("02_JOBS",j,"06_video","rendering.mp4")
-    def video_final(self,j): return self("02_JOBS",j,"06_video","final.mp4")
-    def thumbnail(self,j): return self("02_JOBS",j,"07_thumbnail.png")
-    def output_video(self,j): return self("05_OUTPUT","completed",j+".mp4")
+        """
+        Create the global Black History Factory directory structure.
+        Safe to call repeatedly.
+        """
+        self.root.mkdir(parents=True, exist_ok=True)
+
+        for folder in self.SUBFOLDERS:
+            (self.root / folder).mkdir(parents=True, exist_ok=True)
+
+        return self.root
+
+    def prepare_job(self, job_id):
+        """
+        Create the complete directory structure for one job.
+
+        This is the permanent fix for errors such as:
+
+        FileNotFoundError:
+        .../02_JOBS/BH000001/02_script/narration.txt
+
+        Safe to call repeatedly.
+        """
+        job_root = self.job(job_id)
+
+        job_root.mkdir(parents=True, exist_ok=True)
+
+        for folder in self.JOB_SUBFOLDERS:
+            (job_root / folder).mkdir(parents=True, exist_ok=True)
+
+        return job_root
+
+    # ------------------------------------------------------------------
+    # JOB ROOT
+    # ------------------------------------------------------------------
+
+    def job(self, job_id):
+        return self.root / "02_JOBS" / job_id
+
+    # ------------------------------------------------------------------
+    # JOB MANIFEST / STATE
+    # ------------------------------------------------------------------
+
+    def manifest(self, job_id):
+        return self.job(job_id) / "job.json"
+
+    def state(self, job_id):
+        return self.job(job_id) / "state"
+
+    # ------------------------------------------------------------------
+    # RESEARCH
+    # ------------------------------------------------------------------
+
+    def research_dir(self, job_id):
+        return self.job(job_id) / "01_research"
+
+    def research(self, job_id):
+        return self.research_dir(job_id) / "research.json"
+
+    def sources(self, job_id):
+        return self.research_dir(job_id) / "sources.json"
+
+    def verified(self, job_id):
+        return self.research_dir(job_id) / "verified.json"
+
+    # ------------------------------------------------------------------
+    # SCRIPT / NARRATION
+    # ------------------------------------------------------------------
+
+    def script_dir(self, job_id):
+        return self.job(job_id) / "02_script"
+
+    def narration(self, job_id):
+        return self.script_dir(job_id) / "narration.txt"
+
+    # ------------------------------------------------------------------
+    # SCENES
+    # ------------------------------------------------------------------
+
+    def scenes_dir(self, job_id):
+        return self.job(job_id) / "03_scenes"
+
+    def scenes(self, job_id):
+        return self.scenes_dir(job_id) / "scenes.json"
+
+    # ------------------------------------------------------------------
+    # IMAGES
+    # ------------------------------------------------------------------
+
+    def images_dir(self, job_id):
+        return self.job(job_id) / "04_images"
+
+    def image(self, job_id, scene_id):
+        return self.images_dir(job_id) / f"{scene_id}.png"
+
+    # ------------------------------------------------------------------
+    # AUDIO
+    # ------------------------------------------------------------------
+
+    def audio_dir(self, job_id):
+        return self.job(job_id) / "05_audio"
+
+    def audio(self, job_id, scene_id):
+        return self.audio_dir(job_id) / f"{scene_id}.wav"
+
+    def narration_audio(self, job_id):
+        return self.audio_dir(job_id) / "narration.wav"
+
+    # ------------------------------------------------------------------
+    # VIDEO
+    # ------------------------------------------------------------------
+
+    def video_dir(self, job_id):
+        return self.job(job_id) / "06_video"
+
+    def clips_dir(self, job_id):
+        return self.video_dir(job_id) / "clips"
+
+    def video(self, job_id):
+        return self.video_dir(job_id) / f"{job_id}.mp4"
+
+    # ------------------------------------------------------------------
+    # THUMBNAIL
+    # ------------------------------------------------------------------
+
+    def thumbnail_dir(self, job_id):
+        return self.job(job_id) / "07_thumbnail"
+
+    def thumbnail(self, job_id):
+        return self.thumbnail_dir(job_id) / f"{job_id}.jpg"
+
+    # ------------------------------------------------------------------
+    # AUDIO LIBRARY
+    # ------------------------------------------------------------------
+
+    def music_dir(self):
+        return self.root / "03_AUDIO_LIBRARY" / "music"
+
+    def ambience_dir(self):
+        return self.root / "03_AUDIO_LIBRARY" / "ambience"
+
+    def sfx_dir(self):
+        return self.root / "03_AUDIO_LIBRARY" / "sfx"
+
+    # ------------------------------------------------------------------
+    # OUTPUT
+    # ------------------------------------------------------------------
+
+    def completed_dir(self):
+        return self.root / "04_OUTPUT" / "completed"
+
+    def failed_dir(self):
+        return self.root / "04_OUTPUT" / "failed"
+
+    def completed(self, job_id):
+        return self.completed_dir() / f"{job_id}.mp4"
+
+    def failed(self, job_id):
+        return self.failed_dir() / f"{job_id}"
+
+    # ------------------------------------------------------------------
+    # STATUS / LOGS
+    # ------------------------------------------------------------------
+
+    def status_dir(self):
+        return self.root / "05_STATUS"
+
+    def current_status(self):
+        return self.status_dir() / "current.json"
+
+    def history_status(self):
+        return self.status_dir() / "history.json"
+
+    def logs_dir(self):
+        return self.root / "06_LOGS"
+
+    def log(self, job_id):
+        return self.logs_dir() / f"{job_id}.log"
+
+
+# ----------------------------------------------------------------------
+# GOOGLE DRIVE MOUNT
+# ----------------------------------------------------------------------
+
 def mount_drive():
-    from google.colab import drive
-    drive.mount('/content/drive',force_remount=False); return '/content/drive/MyDrive'
+    """
+    Mount Google Drive and return the MyDrive path.
+    """
+    drive.mount("/content/drive")
+
+    mydrive = Path("/content/drive/MyDrive")
+    return mydrive
