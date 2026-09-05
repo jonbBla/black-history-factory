@@ -964,4 +964,55 @@ def mark_used(
     # Avoid duplicates
     # --------------------------------------------------------
 
-    existing_titles =
+    existing_titles = {
+        _topic_title(item).lower()
+        for item in rejected_data
+        if _topic_title(item)
+    }
+
+    if (
+        topic.title.lower()
+        not in existing_titles
+    ):
+        rejected_data.append(
+            {
+                "job_id": job_id,
+
+                "topic_id": topic.id,
+
+                "title": topic.title,
+
+                "category": topic.category,
+
+                "region": topic.region,
+
+                "period": topic.period,
+
+                "description": topic.description,
+
+                "reason": reason,
+
+                "rejected_at": _now(),
+            }
+        )
+
+    _write_json(
+        _rejected_path(paths),
+        rejected_data,
+    )
+
+    # --------------------------------------------------------
+    # Remove from claimed
+    # --------------------------------------------------------
+
+    claimed_data.pop(
+        str(job_id),
+        None,
+    )
+
+    _write_json(
+        _claimed_path(paths),
+        claimed_data,
+    )
+
+    return True
