@@ -964,6 +964,13 @@ def mark_used(
 ):
     """
     Mark a topic as successfully used.
+
+    The topic is added to used.json and removed from
+    claimed.json.
+
+    Returns:
+        True  - successfully marked
+        False - topic could not be recovered
     """
 
     paths.ensure_tree()
@@ -997,7 +1004,7 @@ def mark_used(
     if topic is None:
 
         record = claimed_data.get(
-            job_id
+            str(job_id)
         )
 
         if isinstance(
@@ -1036,22 +1043,31 @@ def mark_used(
         return False
 
     # --------------------------------------------------------
-    # Avoid duplicates
+    # Avoid duplicate used records
     # --------------------------------------------------------
+
+    existing_ids = {
+        _topic_id(item)
+        for item in used_data
+        if _topic_id(item)
+    }
 
     existing_titles = {
         _topic_title(item).lower()
-        for item in rejected_data
+        for item in used_data
         if _topic_title(item)
     }
 
+    topic_id = _topic_id(topic)
+    topic_title = _topic_title(topic)
+
     if (
-        topic.title.lower()
-        not in existing_titles
+        topic_id not in existing_ids
+        and topic_title.lower() not in existing_titles
     ):
-        rejected_data.append(
+        used_data.append(
             {
-                "job_id": job_id,
+                "job_id": str(job_id),
 
                 "topic_id": topic.id,
 
@@ -1065,19 +1081,21 @@ def mark_used(
 
                 "description": topic.description,
 
-                "reason": reason,
-
-                "rejected_at": _now(),
+                "used_at": _now(),
             }
         )
 
+    # --------------------------------------------------------
+    # Save used topics
+    # --------------------------------------------------------
+
     _write_json(
-        _rejected_path(paths),
-        rejected_data,
+        _used_path(paths),
+        used_data,
     )
 
     # --------------------------------------------------------
-    # Remove from claimed
+    # Remove topic from claimed
     # --------------------------------------------------------
 
     claimed_data.pop(
@@ -1089,5 +1107,33 @@ def mark_used(
         _claimed_path(paths),
         claimed_data,
     )
+
+    # --------------------------------------------------------
+    # Update job manifest
+    # --------------------------------------------------------
+
+    manifest_path = (
+        Path(paths.root)
+        / "02_JOBS"
+        / str(job_id)
+        / "job.json"
+    )
+
+    manifest = _read_json(
+        manifest_path,
+        {},
+    )
+
+    if isinstance(
+        manifest,
+        dict,
+    ):
+        manifest["status"] = "QWEN_READY"
+        manifest["updated_at"] = _now()
+
+        _write_json(
+            manifest_path,
+            manifest,
+        )
 
     return True
