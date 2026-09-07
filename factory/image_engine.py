@@ -6,179 +6,89 @@ import os
 import torch
 
 
-# ---------------------------------------------------------------------
-# SDXL + SDXL-Lightning configuration
-# ---------------------------------------------------------------------
+MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
 
-BASE_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"
-LIGHTNING_REPO = "ByteDance/SDXL-Lightning"
-LIGHTNING_CHECKPOINT = "sdxl_lightning_4step_unet.safetensors"
-
-
-# ---------------------------------------------------------------------
-# Memory helpers
-# ---------------------------------------------------------------------
 
 def _clear_memory():
-    """Release temporary Python/CUDA memory."""
+    """Release unused CPU/GPU memory."""
     gc.collect()
 
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
 
-
-# ---------------------------------------------------------------------
-# Model loading
-# ---------------------------------------------------------------------
 
 def load_sdxl_lightning(model_id=None):
     """
-    Load SDXL Base 1.0 with the official SDXL-Lightning 4-step UNet.
+    Load the stable SDXL Base 1.0 pipeline.
 
-    Designed for Google Colab T4:
-    - FP16 on CUDA
-    - CPU model offloading
-    - VAE slicing
-    - VAE tiling
-    - Lightning 4-step inference
+    The function name is kept as load_sdxl_lightning() so the existing
+    Image Processor notebook does not need to change.
+
+    Uses the same loading configuration as the proven
+    Structured SDXL Image Generator notebook:
+      - SDXL Base 1.0
+      - FP16
+      - safetensors
+      - CPU model offloading
+      - VAE slicing
+      - VAE tiling
     """
 
-    from diffusers import (
-        EulerDiscreteScheduler,
-        StableDiffusionXLPipeline,
-        UNet2DConditionModel,
-    )
-    from huggingface_hub import hf_hub_download
-    from safetensors.torch import load_file
+    from diffusers import StableDiffusionXLPipeline
 
-    use_cuda = torch.cuda.is_available()
-    dtype = torch.float16 if use_cuda else torch.float32
-    device = "cuda" if use_cuda else "cpu"
-
-    print("[IMAGE] Loading SDXL-Lightning 4-step...")
-    print(f"[IMAGE] Device: {device}")
-    print(f"[IMAGE] Base model: {BASE_MODEL}")
-    print(f"[IMAGE] Lightning checkpoint: {LIGHTNING_CHECKPOINT}")
+    if torch.cuda.is_available():
+        dtype = torch.float16
+        print(f"[IMAGE] GPU: {torch.cuda.get_device_name(0)}")
+        print(
+            f"[IMAGE] VRAM: "
+            f"{torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB"
+        )
+    else:
+        dtype = torch.float32
+        print("[IMAGE] WARNING: CUDA GPU not detected.")
 
     _clear_memory()
 
-    # -------------------------------------------------------------
-    # 1. Build the SDXL UNet architecture from SDXL Base
-    # -------------------------------------------------------------
-
-    print("[IMAGE] Creating UNet architecture...")
-
-    unet = UNet2DConditionModel.from_config(
-        BASE_MODEL,
-        subfolder="unet",
-    )
-
-    # -------------------------------------------------------------
-    # 2. Download the official 4-step Lightning UNet
-    # -------------------------------------------------------------
-
-    print("[IMAGE] Downloading/loading Lightning checkpoint...")
-
-    checkpoint_path = hf_hub_download(
-        repo_id=LIGHTNING_REPO,
-        filename=LIGHTNING_CHECKPOINT,
-    )
-
-    # Load checkpoint directly to CPU first.
-    #
-    # This avoids creating an unnecessary second GPU copy while
-    # loading the large ~5 GB UNet checkpoint.
-    state_dict = load_file(
-        checkpoint_path,
-        device="cpu",
-    )
-
-    print("[IMAGE] Applying Lightning weights...")
-
-    unet.load_state_dict(
-        state_dict,
-        strict=True,
-    )
-
-    # The state dictionary is no longer needed after loading.
-    del state_dict
-
-    _clear_memory()
-
-    # Convert the UNet to FP16 before putting it under the pipeline.
-    unet = unet.to(dtype=dtype)
-
-    _clear_memory()
-
-    # -------------------------------------------------------------
-    # 3. Create the SDXL pipeline
-    # -------------------------------------------------------------
-
-    print("[IMAGE] Loading SDXL Base pipeline...")
+    print("[IMAGE] Loading Stable Diffusion XL 1.0 Base...")
+    print(f"[IMAGE] Model: {MODEL_ID}")
 
     pipe = StableDiffusionXLPipeline.from_pretrained(
-        BASE_MODEL,
-        unet=unet,
+        MODEL_ID,
         torch_dtype=dtype,
-        variant="fp16" if use_cuda else None,
         use_safetensors=True,
+        variant="fp16" if torch.cuda.is_available() else None,
         add_watermarker=False,
     )
 
-    # The separate UNet object is now owned by the pipeline.
-    del unet
+    print("[IMAGE] Enabling CPU model offload...")
 
-    _clear_memory()
-
-    # -------------------------------------------------------------
-    # 4. Lightning requires the trailing Euler scheduler
-    # -------------------------------------------------------------
-
-    pipe.scheduler = EulerDiscreteScheduler.from_config(
-        pipe.scheduler.config,
-        timestep_spacing="trailing",
-    )
-
-    # -------------------------------------------------------------
-    # 5. T4 memory optimizations
-    # -------------------------------------------------------------
-
-    if use_cuda:
-        print("[IMAGE] Enabling CPU model offload...")
-
-        # IMPORTANT:
-        # Do NOT use pipe.to("cuda") here.
-        #
-        # CPU offloading keeps only the currently required model
-        # components on the T4, greatly reducing VRAM usage.
+    if torch.cuda.is_available():
         pipe.enable_model_cpu_offload()
 
+        # These significantly reduce VAE memory usage.
         pipe.vae.enable_slicing()
         pipe.vae.enable_tiling()
 
     else:
-        pipe.to(device)
+        pipe.to("cpu")
 
     pipe.set_progress_bar_config(disable=True)
 
     _clear_memory()
 
-    print("[IMAGE] SDXL-Lightning 4-step ready.")
+    print("[IMAGE] Stable Diffusion XL loaded and ready.")
 
     return pipe
 
 
-# ---------------------------------------------------------------------
-# Prompt handling
-# ---------------------------------------------------------------------
-
 def _scene_prompt(scene):
     """
-    Select the best visual prompt available in scenes.json.
+    Get the image prompt produced by the Qwen scene processor.
 
-    Qwen already creates the visual information, so the image
-    processor does not create a second prompt-generation stage.
+    Preference:
+      1. image_prompt
+      2. visual_description
+      3. image_description
     """
 
     prompt = (
@@ -197,16 +107,12 @@ def _scene_prompt(scene):
     return str(prompt).strip()
 
 
-# ---------------------------------------------------------------------
-# Image generation
-# ---------------------------------------------------------------------
-
 def run(paths, job_id, scenes, pipe, config, progress=None):
     """
-    Generate only missing scene images.
+    Generate missing scene images only.
 
-    Existing images are never regenerated, allowing safe resume
-    after a Colab reset/interruption.
+    Existing images are skipped so the processor can safely resume
+    after a Colab reset or interruption.
     """
 
     out = paths.images_dir(job_id)
@@ -217,8 +123,13 @@ def run(paths, job_id, scenes, pipe, config, progress=None):
 
     width = int(config.image_width)
     height = int(config.image_height)
-    steps = int(config.image_steps)
-    guidance = float(config.image_guidance_scale)
+
+    # Use the existing config values when present.
+    # The stable SDXL notebook uses 28 steps and CFG 7.
+    steps = int(getattr(config, "image_steps", 28))
+    guidance = float(
+        getattr(config, "image_guidance_scale", 7.0)
+    )
 
     for i, scene in enumerate(scenes, 1):
 
@@ -234,6 +145,7 @@ def run(paths, job_id, scenes, pipe, config, progress=None):
         # ---------------------------------------------------------
 
         if os.path.exists(output_path):
+
             print(
                 f"[IMAGE] {job_id} | "
                 f"scene {i}/{total} | exists, skip"
@@ -247,7 +159,7 @@ def run(paths, job_id, scenes, pipe, config, progress=None):
             continue
 
         # ---------------------------------------------------------
-        # Prompt
+        # Get Qwen's visual prompt
         # ---------------------------------------------------------
 
         prompt = _scene_prompt(scene)
@@ -257,46 +169,37 @@ def run(paths, job_id, scenes, pipe, config, progress=None):
             f"scene {i}/{total} | generating"
         )
 
-        # ---------------------------------------------------------
-        # Deterministic per-scene generator
-        #
-        # A separate generator prevents the whole job from depending
-        # on one global random state.
-        # ---------------------------------------------------------
-
-        generator = None
-
-        if torch.cuda.is_available():
-            generator = torch.Generator(device="cuda").manual_seed(
-                int(sid)
-            )
-        else:
-            generator = torch.Generator().manual_seed(
-                int(sid)
-            )
+        # CPU generator matches the proven working notebook.
+        generator = torch.Generator(
+            device="cpu"
+        ).manual_seed(sid)
 
         # ---------------------------------------------------------
-        # Generate ONE image at a time.
+        # Generate ONE image at a time
         # ---------------------------------------------------------
 
         with torch.inference_mode():
 
             result = pipe(
                 prompt=prompt,
-                num_inference_steps=steps,
-                guidance_scale=guidance,
                 width=width,
                 height=height,
+                num_inference_steps=steps,
+                guidance_scale=guidance,
                 generator=generator,
             )
 
             image = result.images[0]
 
-            image.save(output_path)
+            image.save(
+                output_path,
+                format="PNG",
+            )
 
-            del result
             del image
-            del generator
+            del result
+
+        del generator
 
         _clear_memory()
 
