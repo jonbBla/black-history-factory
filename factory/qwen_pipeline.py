@@ -25,10 +25,9 @@ def _update_status(
     """
     Update the Qwen processor status.
 
-    This uses status.set_processor() only.
-    Do NOT use topic_engine.update_status() because
-    that function does not exist.
+    Status is handled by status.set_processor().
     """
+
     try:
         status.set_processor(
             paths,
@@ -38,6 +37,7 @@ def _update_status(
             stage=stage,
             detail=message,
         )
+
     except Exception as e:
         print(f"[STATUS] WARNING | {e}")
 
@@ -50,7 +50,7 @@ def _run_or_load(
 ):
     """
     Load an existing JSON output if it already exists.
-    Otherwise run the supplied function.
+    Otherwise execute the supplied function.
     """
 
     existing = read_json(path, None)
@@ -73,7 +73,7 @@ def run_one(
     qwen,
 ):
     """
-    Process one topic through the complete Qwen pipeline.
+    Process one topic through the Qwen pipeline.
 
     Workflow:
 
@@ -93,13 +93,18 @@ def run_one(
     """
 
     try:
+
+        # =========================================================
+        # START
+        # =========================================================
+
         print(
             f"[QWEN] {job_id} | START | {topic.title}"
         )
 
-        # ---------------------------------------------------------
+        # =========================================================
         # 1. RESEARCH
-        # ---------------------------------------------------------
+        # =========================================================
 
         _update_status(
             paths,
@@ -121,9 +126,9 @@ def run_one(
             ),
         )
 
-        # ---------------------------------------------------------
+        # =========================================================
         # 2. FACT CHECK
-        # ---------------------------------------------------------
+        # =========================================================
 
         _update_status(
             paths,
@@ -146,9 +151,9 @@ def run_one(
             ),
         )
 
-        # ---------------------------------------------------------
+        # =========================================================
         # 3. NARRATION
-        # ---------------------------------------------------------
+        # =========================================================
 
         _update_status(
             paths,
@@ -160,6 +165,7 @@ def run_one(
         narration_path = paths.narration(job_id)
 
         if os.path.exists(narration_path):
+
             with open(
                 narration_path,
                 encoding="utf-8",
@@ -172,6 +178,7 @@ def run_one(
             )
 
         else:
+
             narration = script_engine.run(
                 paths=paths,
                 job_id=job_id,
@@ -196,9 +203,9 @@ def run_one(
             f"{narration_words}"
         )
 
-        # ---------------------------------------------------------
+        # =========================================================
         # 4. INTELLIGENT SCENE PLANNING
-        # ---------------------------------------------------------
+        # =========================================================
 
         _update_status(
             paths,
@@ -233,19 +240,17 @@ def run_one(
                 qwen=qwen,
             )
 
-        # ---------------------------------------------------------
+        # =========================================================
         # 5. BASIC SCENE VALIDATION
-        # ---------------------------------------------------------
+        # =========================================================
         #
         # IMPORTANT:
-        # There is intentionally NO scene-count restriction here.
         #
-        # Qwen decides how many scenes are appropriate.
+        # There is intentionally NO minimum or maximum
+        # scene-count restriction.
         #
-        # We only verify that scene_engine returned a list.
-        # scene_engine itself validates sentence coverage,
-        # ordering, camera values, visual descriptions, etc.
-        # ---------------------------------------------------------
+        # Qwen decides the appropriate number of scenes.
+        # =========================================================
 
         if not isinstance(scenes, list):
             raise ValueError(
@@ -265,9 +270,9 @@ def run_one(
             f"{scene_count}"
         )
 
-        # ---------------------------------------------------------
-        # 6. COMPLETE
-        # ---------------------------------------------------------
+        # =========================================================
+        # 6. MARK JOB COMPLETE
+        # =========================================================
 
         _update_status(
             paths,
@@ -281,13 +286,24 @@ def run_one(
             state="idle",
         )
 
-        # Mark the topic as successfully used.
-        #
         # IMPORTANT:
-        # topic_engine.update_status() does NOT exist.
-        # Do not call it here.
+        #
+        # mark_used() expects:
+        #
+        #     mark_used(paths, job_id, topic=None)
+        #
+        # NOT:
+        #
+        #     mark_used(paths, topic)
+        #
+        # Passing topic as job_id caused:
+        #
+        #     TypeError: unhashable type: 'Topic'
+        #
+
         topic_engine.mark_used(
             paths,
+            job_id,
             topic,
         )
 
@@ -298,9 +314,9 @@ def run_one(
 
         return True
 
-    # -------------------------------------------------------------
+    # =============================================================
     # ERROR HANDLING
-    # -------------------------------------------------------------
+    # =============================================================
 
     except Exception as e:
 
@@ -310,9 +326,6 @@ def run_one(
 
         traceback.print_exc()
 
-        # Update the processor status only.
-        # There is deliberately NO topic_engine.update_status()
-        # call here.
         _update_status(
             paths,
             job_id,
