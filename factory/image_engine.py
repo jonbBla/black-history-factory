@@ -1,211 +1,659 @@
+# factory/image_engine.py
+
 from __future__ import annotations
 
 import gc
 import os
+from pathlib import Path
+from typing import Callable, Optional
 
 import torch
+from diffusers import StableDiffusionXLPipeline
 
+from .utils import read_json
+
+
+# ============================================================
+# MODEL
+# ============================================================
 
 MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
 
 
+# ============================================================
+# MEMORY
+# ============================================================
+
 def _clear_memory():
-    """Release unused CPU/GPU memory."""
     gc.collect()
 
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
 
 
-def load_sdxl_lightning(model_id=None):
+# ============================================================
+# LOAD MODEL
+# ============================================================
+
+def load_sdxl_lightning(model_id: Optional[str] = None):
     """
-    Load the stable SDXL Base 1.0 pipeline.
+    Loads the stable SDXL Base pipeline.
 
-    The function name is kept as load_sdxl_lightning() so the existing
-    Image Processor notebook does not need to change.
-
-    Uses the same loading configuration as the proven
-    Structured SDXL Image Generator notebook:
-      - SDXL Base 1.0
-      - FP16
-      - safetensors
-      - CPU model offloading
-      - VAE slicing
-      - VAE tiling
+    The function name is retained for compatibility with the
+    existing Image Processor notebook.
     """
 
-    from diffusers import StableDiffusionXLPipeline
+    model_id = model_id or MODEL_ID
 
-    if torch.cuda.is_available():
-        dtype = torch.float16
-        print(f"[IMAGE] GPU: {torch.cuda.get_device_name(0)}")
-        print(
-            f"[IMAGE] VRAM: "
-            f"{torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB"
-        )
-    else:
-        dtype = torch.float32
-        print("[IMAGE] WARNING: CUDA GPU not detected.")
-
-    _clear_memory()
-
-    print("[IMAGE] Loading Stable Diffusion XL 1.0 Base...")
-    print(f"[IMAGE] Model: {MODEL_ID}")
+    print(f"[IMAGE] Loading SDXL model: {model_id}")
 
     pipe = StableDiffusionXLPipeline.from_pretrained(
-        MODEL_ID,
-        torch_dtype=dtype,
+        model_id,
+        torch_dtype=torch.float16,
         use_safetensors=True,
-        variant="fp16" if torch.cuda.is_available() else None,
+        variant="fp16",
         add_watermarker=False,
     )
 
-    print("[IMAGE] Enabling CPU model offload...")
+    # Important for Colab T4 / limited VRAM.
+    pipe.enable_model_cpu_offload()
 
-    if torch.cuda.is_available():
-        pipe.enable_model_cpu_offload()
-
-        # These significantly reduce VAE memory usage.
-        pipe.vae.enable_slicing()
-        pipe.vae.enable_tiling()
-
-    else:
-        pipe.to("cpu")
-
-    pipe.set_progress_bar_config(disable=True)
+    # Reduce VAE memory usage.
+    pipe.vae.enable_slicing()
+    pipe.vae.enable_tiling()
 
     _clear_memory()
 
-    print("[IMAGE] Stable Diffusion XL loaded and ready.")
+    print("[IMAGE] SDXL loaded.")
 
     return pipe
 
 
-def _scene_prompt(scene):
-    """
-    Get the image prompt produced by the Qwen scene processor.
+# ============================================================
+# ART STYLE
+# ============================================================
 
-    Preference:
-      1. image_prompt
-      2. visual_description
-      3. image_description
+DEFAULT_ART_STYLE = {
+    "primary": "cinematic 3D historical reconstruction",
+
+    "description": (
+        "epic cinematic historical reconstruction, "
+        "high-end AAA game cinematic, "
+        "Unreal Engine style, "
+        "Octane-style 3D rendering, "
+        "detailed CGI environment, "
+        "physically based 3D materials, "
+        "dramatic natural lighting, "
+        "volumetric atmosphere, "
+        "strong depth, "
+        "detailed surfaces, "
+        "cinematic composition, "
+        "realistic 3D geometry, "
+        "realistic textures, "
+        "dramatic scale, "
+        "highly detailed environments, "
+        "cinematic depth of field"
+    ),
+
+    "default_renderer_feel": (
+        "high-end game cinematic, Unreal Engine style"
+    ),
+}
+
+
+DEFAULT_VISUAL_RULES = {
+    "prioritize_historical_accuracy": True,
+    "avoid_anachronisms": True,
+    "avoid_generic_african_architecture": True,
+    "avoid_modern_objects": True,
+    "avoid_unjustified_costumes": True,
+    "use_region_specific_architecture": True,
+    "use_period_specific_materials": True,
+    "use_evidence_based_visual_details": True,
+}
+
+
+# ============================================================
+# STYLE PROMPT
+# ============================================================
+
+def build_style_prompt(config) -> str:
+    """
+    Converts config.art_style into a strong SDXL style instruction.
+
+    Qwen remains responsible for WHAT is shown.
+    The image engine is responsible for HOW it is rendered.
     """
 
-    prompt = (
+    art_style = getattr(config, "art_style", None)
+
+    if not isinstance(art_style, dict):
+        art_style = DEFAULT_ART_STYLE
+
+    primary = str(
+        art_style.get(
+            "primary",
+            DEFAULT_ART_STYLE["primary"]
+        )
+    )
+
+    description = str(
+        art_style.get(
+            "description",
+            DEFAULT_ART_STYLE["description"]
+        )
+    )
+
+    renderer = str(
+        art_style.get(
+            "default_renderer_feel",
+            DEFAULT_ART_STYLE["default_renderer_feel"]
+        )
+    )
+
+    style = f"""
+{primary},
+{description},
+{renderer},
+cinematic 3D CGI,
+fully rendered 3D scene,
+three-dimensional geometry,
+physically based rendering,
+PBR materials,
+detailed 3D surfaces,
+realistic environmental geometry,
+AAA video game cinematic,
+epic visual storytelling,
+cinematic lighting,
+volumetric light,
+atmospheric perspective,
+dramatic depth,
+cinematic depth of field,
+high detail,
+large-scale cinematic composition
+"""
+
+    return " ".join(style.split())
+
+
+# ============================================================
+# HISTORICAL VISUAL RULES
+# ============================================================
+
+def build_visual_rules_prompt(config) -> str:
+    """
+    Adds historical accuracy constraints without changing
+    Qwen's actual scene content.
+    """
+
+    rules = getattr(config, "visual_rules", None)
+
+    if not isinstance(rules, dict):
+        rules = DEFAULT_VISUAL_RULES
+
+    parts = []
+
+    if rules.get("prioritize_historical_accuracy"):
+        parts.append("historically accurate reconstruction")
+
+    if rules.get("avoid_anachronisms"):
+        parts.append("strictly avoid anachronistic objects and technology")
+
+    if rules.get("avoid_generic_african_architecture"):
+        parts.append(
+            "use specific regionally appropriate architecture rather than generic African architecture"
+        )
+
+    if rules.get("avoid_modern_objects"):
+        parts.append(
+            "no modern objects, vehicles, clothing, buildings, tools, electronics or infrastructure"
+        )
+
+    if rules.get("avoid_unjustified_costumes"):
+        parts.append(
+            "period-appropriate clothing and textiles based on the historical setting"
+        )
+
+    if rules.get("use_region_specific_architecture"):
+        parts.append(
+            "region-specific architecture and construction methods"
+        )
+
+    if rules.get("use_period_specific_materials"):
+        parts.append(
+            "period-specific materials, tools and construction techniques"
+        )
+
+    if rules.get("use_evidence_based_visual_details"):
+        parts.append(
+            "evidence-based historical visual details"
+        )
+
+    return ", ".join(parts)
+
+
+# ============================================================
+# NEGATIVE PROMPT
+# ============================================================
+
+def build_negative_prompt() -> str:
+    """
+    Strongly discourages SDXL from interpreting the scene as
+    ordinary photography or flat artwork.
+    """
+
+    return """
+photograph,
+photography,
+photorealistic photograph,
+real photograph,
+live action,
+documentary photography,
+news photograph,
+studio photograph,
+modern camera aesthetic,
+DSLR photo,
+portrait photography,
+fashion photography,
+film still,
+cinematic photograph,
+real person photograph,
+flat illustration,
+2D illustration,
+digital painting,
+painting,
+watercolor,
+sketch,
+drawing,
+cartoon,
+anime,
+manga,
+comic,
+cel shading,
+vector art,
+flat colors,
+low detail,
+low poly,
+plastic toy,
+doll,
+figurine,
+modern clothing,
+modern architecture,
+modern vehicles,
+cars,
+motorcycles,
+smartphones,
+laptops,
+electric lights,
+neon signs,
+contemporary objects,
+futuristic objects,
+science fiction,
+text,
+letters,
+words,
+logos,
+watermarks
+"""
+
+# Clean whitespace.
+DEFAULT_NEGATIVE_PROMPT = " ".join(
+    build_negative_prompt().split()
+)
+
+
+# ============================================================
+# FINAL PROMPT
+# ============================================================
+
+def build_image_prompt(
+    scene: dict,
+    config,
+) -> str:
+    """
+    Combines:
+
+        1. Qwen's scene content
+        2. Config art style
+        3. Historical accuracy rules
+        4. Strong 3D rendering direction
+
+    Qwen controls the historical subject.
+    The image engine controls the rendering medium.
+    """
+
+    # --------------------------------------------------------
+    # Qwen's generated visual prompt
+    # --------------------------------------------------------
+
+    qwen_prompt = (
         scene.get("image_prompt")
         or scene.get("visual_description")
         or scene.get("image_description")
+        or ""
     )
 
-    if not prompt:
-        sid = scene.get("scene_id", "?")
+    qwen_prompt = str(qwen_prompt).strip()
+
+    if not qwen_prompt:
         raise ValueError(
-            f"Scene {sid} has no image_prompt, "
-            f"visual_description, or image_description."
+            f"Scene {scene.get('scene_number', scene.get('scene_id', '?'))} "
+            "does not contain an image prompt or visual description."
         )
 
-    return str(prompt).strip()
+    # --------------------------------------------------------
+    # Camera
+    # --------------------------------------------------------
+
+    camera = str(
+        scene.get("camera", "")
+    ).strip()
+
+    # --------------------------------------------------------
+    # Style
+    # --------------------------------------------------------
+
+    style_prompt = build_style_prompt(config)
+
+    # --------------------------------------------------------
+    # Historical rules
+    # --------------------------------------------------------
+
+    historical_prompt = build_visual_rules_prompt(config)
+
+    # --------------------------------------------------------
+    # Camera instruction
+    # --------------------------------------------------------
+
+    camera_prompt = ""
+
+    if camera:
+        camera_prompt = f"""
+Camera direction:
+{camera}
+"""
+
+    # --------------------------------------------------------
+    # Final prompt
+    # --------------------------------------------------------
+
+    final_prompt = f"""
+HISTORICAL SUBJECT AND SCENE:
+
+{qwen_prompt}
+
+VISUAL MEDIUM AND RENDERING:
+
+{style_prompt}
+
+HISTORICAL ACCURACY:
+
+{historical_prompt}
+
+{camera_prompt}
+
+The image must look like a deliberately created
+high-end 3D historical reconstruction rather than a photograph.
+
+Render the people, architecture, landscape, clothing,
+objects and environment as fully modeled three-dimensional
+CGI assets with physically based materials.
+
+Use convincing 3D geometry, detailed surfaces,
+natural material response, cinematic volumetric lighting,
+atmospheric depth, dramatic scale and strong visual hierarchy.
+
+Preserve the specific historical location, culture,
+period, architecture, clothing, tools and objects
+described in the scene.
+
+Do not replace historically specific details with
+generic African visual stereotypes.
+
+The result should resemble an expensive AAA historical
+video game cinematic rendered in Unreal Engine,
+with cinematic composition and epic visual storytelling.
+"""
+
+    return " ".join(final_prompt.split())
 
 
-def run(paths, job_id, scenes, pipe, config, progress=None):
+# ============================================================
+# IMAGE GENERATION
+# ============================================================
+
+def generate_image(
+    pipe,
+    prompt: str,
+    output_path: Path,
+    config,
+    seed: Optional[int] = None,
+):
     """
-    Generate missing scene images only.
-
-    Existing images are skipped so the processor can safely resume
-    after a Colab reset or interruption.
+    Generate a single vertical SDXL image.
     """
 
-    out = paths.images_dir(job_id)
-    os.makedirs(out, exist_ok=True)
+    width = int(
+        getattr(config, "image_width", 768)
+    )
 
-    files = []
-    total = len(scenes)
+    height = int(
+        getattr(config, "image_height", 1344)
+    )
 
-    width = int(config.image_width)
-    height = int(config.image_height)
+    steps = int(
+        getattr(config, "image_steps", 28)
+    )
 
-    # Use the existing config values when present.
-    # The stable SDXL notebook uses 28 steps and CFG 7.
-    steps = int(getattr(config, "image_steps", 28))
     guidance = float(
         getattr(config, "image_guidance_scale", 7.0)
     )
 
-    for i, scene in enumerate(scenes, 1):
+    # --------------------------------------------------------
+    # Generator
+    # --------------------------------------------------------
 
-        sid = int(scene["scene_id"])
+    generator = None
 
-        output_path = os.path.join(
-            out,
-            f"scene_{sid:03d}.png",
+    if seed is not None:
+        generator = torch.Generator(device="cpu").manual_seed(
+            int(seed)
         )
 
-        # ---------------------------------------------------------
-        # Resume support
-        # ---------------------------------------------------------
+    # --------------------------------------------------------
+    # Generate
+    # --------------------------------------------------------
 
-        if os.path.exists(output_path):
+    result = pipe(
+        prompt=prompt,
+        negative_prompt=DEFAULT_NEGATIVE_PROMPT,
+        width=width,
+        height=height,
+        num_inference_steps=steps,
+        guidance_scale=guidance,
+        generator=generator,
+    )
+
+    image = result.images[0]
+
+    # --------------------------------------------------------
+    # Save
+    # --------------------------------------------------------
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    image.save(output_path)
+
+    # --------------------------------------------------------
+    # Memory cleanup
+    # --------------------------------------------------------
+
+    del result
+    del image
+
+    _clear_memory()
+
+    return output_path
+
+
+# ============================================================
+# SCENE IMAGE PATH
+# ============================================================
+
+def _scene_number(scene: dict, fallback: int) -> int:
+    """
+    Safely determine scene number.
+    """
+
+    value = (
+        scene.get("scene_number")
+        or scene.get("scene_id")
+        or fallback
+    )
+
+    try:
+        return int(value)
+    except Exception:
+        return fallback
+
+
+# ============================================================
+# RUN IMAGE PROCESSOR
+# ============================================================
+
+def run(
+    paths,
+    job_id: str,
+    scenes: list,
+    pipe,
+    config,
+    progress: Optional[Callable[[int, int], None]] = None,
+):
+    """
+    Generate only missing scene images.
+
+    Existing images are never regenerated.
+    """
+
+    total = len(scenes)
+
+    if total == 0:
+        raise ValueError(
+            f"Job {job_id} contains no scenes."
+        )
+
+    generated = 0
+    skipped = 0
+
+    print(
+        f"[IMAGE] Processing {total} scenes..."
+    )
+
+    # --------------------------------------------------------
+    # Process each scene
+    # --------------------------------------------------------
+
+    for index, scene in enumerate(
+        scenes,
+        start=1,
+    ):
+
+        scene_number = _scene_number(
+            scene,
+            index,
+        )
+
+        output_path = Path(
+            paths.image(
+                job_id,
+                scene_number,
+            )
+        )
+
+        # ----------------------------------------------------
+        # Resume support
+        # ----------------------------------------------------
+
+        if output_path.exists() and output_path.stat().st_size > 0:
 
             print(
-                f"[IMAGE] {job_id} | "
-                f"scene {i}/{total} | exists, skip"
+                f"[IMAGE] Scene {scene_number}/{total} "
+                f"already exists — skipping."
             )
 
-            files.append(output_path)
+            skipped += 1
 
             if progress:
-                progress(i, total)
+                progress(
+                    index,
+                    total,
+                )
 
             continue
 
-        # ---------------------------------------------------------
-        # Get Qwen's visual prompt
-        # ---------------------------------------------------------
+        # ----------------------------------------------------
+        # Build prompt
+        # ----------------------------------------------------
 
-        prompt = _scene_prompt(scene)
-
-        print(
-            f"[IMAGE] {job_id} | "
-            f"scene {i}/{total} | generating"
+        prompt = build_image_prompt(
+            scene,
+            config,
         )
 
-        # CPU generator matches the proven working notebook.
-        generator = torch.Generator(
-            device="cpu"
-        ).manual_seed(sid)
+        print(
+            f"[IMAGE] Generating scene "
+            f"{scene_number}/{total}..."
+        )
 
-        # ---------------------------------------------------------
-        # Generate ONE image at a time
-        # ---------------------------------------------------------
+        # Optional: print prompt for debugging.
+        print(
+            f"[IMAGE] Prompt preview: "
+            f"{prompt[:300]}..."
+        )
 
-        with torch.inference_mode():
+        # ----------------------------------------------------
+        # Generate
+        # ----------------------------------------------------
 
-            result = pipe(
-                prompt=prompt,
-                width=width,
-                height=height,
-                num_inference_steps=steps,
-                guidance_scale=guidance,
-                generator=generator,
-            )
+        generate_image(
+            pipe=pipe,
+            prompt=prompt,
+            output_path=output_path,
+            config=config,
+        )
 
-            image = result.images[0]
+        generated += 1
 
-            image.save(
-                output_path,
-                format="PNG",
-            )
-
-            del image
-            del result
-
-        del generator
-
-        _clear_memory()
-
-        files.append(output_path)
+        print(
+            f"[IMAGE] Saved: {output_path}"
+        )
 
         if progress:
-            progress(i, total)
+            progress(
+                index,
+                total,
+            )
 
-    return files
+    # --------------------------------------------------------
+    # Final cleanup
+    # --------------------------------------------------------
+
+    _clear_memory()
+
+    print(
+        f"[IMAGE] Finished | "
+        f"generated={generated} | "
+        f"skipped={skipped} | "
+        f"total={total}"
+    )
+
+    return {
+        "generated": generated,
+        "skipped": skipped,
+        "total": total,
+    }
