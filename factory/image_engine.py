@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import gc
-import os
 from pathlib import Path
 from typing import Callable, Optional
 
 import torch
 from diffusers import StableDiffusionXLPipeline
-
-from .utils import read_json
 
 
 # ============================================================
@@ -33,12 +30,12 @@ def _clear_memory():
 
 
 # ============================================================
-# LOAD MODEL
+# LOAD SDXL
 # ============================================================
 
 def load_sdxl_lightning(model_id: Optional[str] = None):
     """
-    Loads the stable SDXL Base pipeline.
+    Load SDXL Base.
 
     The function name is retained for compatibility with the
     existing Image Processor notebook.
@@ -71,367 +68,247 @@ def load_sdxl_lightning(model_id: Optional[str] = None):
 
 
 # ============================================================
-# ART STYLE
+# COMPACT STYLE PROMPT
 # ============================================================
 
-DEFAULT_ART_STYLE = {
-    "primary": "cinematic 3D historical reconstruction",
-
-    "description": (
-        "epic cinematic historical reconstruction, "
-        "high-end AAA game cinematic, "
-        "Unreal Engine style, "
-        "Octane-style 3D rendering, "
-        "detailed CGI environment, "
-        "physically based 3D materials, "
-        "dramatic natural lighting, "
-        "volumetric atmosphere, "
-        "strong depth, "
-        "detailed surfaces, "
-        "cinematic composition, "
-        "realistic 3D geometry, "
-        "realistic textures, "
-        "dramatic scale, "
-        "highly detailed environments, "
-        "cinematic depth of field"
-    ),
-
-    "default_renderer_feel": (
-        "high-end game cinematic, Unreal Engine style"
-    ),
-}
-
-
-DEFAULT_VISUAL_RULES = {
-    "prioritize_historical_accuracy": True,
-    "avoid_anachronisms": True,
-    "avoid_generic_african_architecture": True,
-    "avoid_modern_objects": True,
-    "avoid_unjustified_costumes": True,
-    "use_region_specific_architecture": True,
-    "use_period_specific_materials": True,
-    "use_evidence_based_visual_details": True,
-}
-
-
-# ============================================================
-# STYLE PROMPT
-# ============================================================
-
-def build_style_prompt(config) -> str:
-    """
-    Converts config.art_style into a strong SDXL style instruction.
-
-    Qwen remains responsible for WHAT is shown.
-    The image engine is responsible for HOW it is rendered.
-    """
-
-    art_style = getattr(config, "art_style", None)
-
-    if not isinstance(art_style, dict):
-        art_style = DEFAULT_ART_STYLE
-
-    primary = str(
-        art_style.get(
-            "primary",
-            DEFAULT_ART_STYLE["primary"]
-        )
-    )
-
-    description = str(
-        art_style.get(
-            "description",
-            DEFAULT_ART_STYLE["description"]
-        )
-    )
-
-    renderer = str(
-        art_style.get(
-            "default_renderer_feel",
-            DEFAULT_ART_STYLE["default_renderer_feel"]
-        )
-    )
-
-    style = f"""
-{primary},
-{description},
-{renderer},
-cinematic 3D CGI,
-fully rendered 3D scene,
-three-dimensional geometry,
-physically based rendering,
-PBR materials,
-detailed 3D surfaces,
-realistic environmental geometry,
-AAA video game cinematic,
-epic visual storytelling,
-cinematic lighting,
-volumetric light,
-atmospheric perspective,
-dramatic depth,
-cinematic depth of field,
-high detail,
-large-scale cinematic composition
-"""
-
-    return " ".join(style.split())
-
-
-# ============================================================
-# HISTORICAL VISUAL RULES
-# ============================================================
-
-def build_visual_rules_prompt(config) -> str:
-    """
-    Adds historical accuracy constraints without changing
-    Qwen's actual scene content.
-    """
-
-    rules = getattr(config, "visual_rules", None)
-
-    if not isinstance(rules, dict):
-        rules = DEFAULT_VISUAL_RULES
-
-    parts = []
-
-    if rules.get("prioritize_historical_accuracy"):
-        parts.append("historically accurate reconstruction")
-
-    if rules.get("avoid_anachronisms"):
-        parts.append("strictly avoid anachronistic objects and technology")
-
-    if rules.get("avoid_generic_african_architecture"):
-        parts.append(
-            "use specific regionally appropriate architecture rather than generic African architecture"
-        )
-
-    if rules.get("avoid_modern_objects"):
-        parts.append(
-            "no modern objects, vehicles, clothing, buildings, tools, electronics or infrastructure"
-        )
-
-    if rules.get("avoid_unjustified_costumes"):
-        parts.append(
-            "period-appropriate clothing and textiles based on the historical setting"
-        )
-
-    if rules.get("use_region_specific_architecture"):
-        parts.append(
-            "region-specific architecture and construction methods"
-        )
-
-    if rules.get("use_period_specific_materials"):
-        parts.append(
-            "period-specific materials, tools and construction techniques"
-        )
-
-    if rules.get("use_evidence_based_visual_details"):
-        parts.append(
-            "evidence-based historical visual details"
-        )
-
-    return ", ".join(parts)
-
-
-# ============================================================
-# NEGATIVE PROMPT
-# ============================================================
-
-def build_negative_prompt() -> str:
-    """
-    Strongly discourages SDXL from interpreting the scene as
-    ordinary photography or flat artwork.
-    """
-
-    return """
-photograph,
-photography,
-photorealistic photograph,
-real photograph,
-live action,
-documentary photography,
-news photograph,
-studio photograph,
-modern camera aesthetic,
-DSLR photo,
-portrait photography,
-fashion photography,
-film still,
-cinematic photograph,
-real person photograph,
-flat illustration,
-2D illustration,
-digital painting,
-painting,
-watercolor,
-sketch,
-drawing,
-cartoon,
-anime,
-manga,
-comic,
-cel shading,
-vector art,
-flat colors,
-low detail,
-low poly,
-plastic toy,
-doll,
-figurine,
-modern clothing,
-modern architecture,
-modern vehicles,
-cars,
-motorcycles,
-smartphones,
-laptops,
-electric lights,
-neon signs,
-contemporary objects,
-futuristic objects,
-science fiction,
-text,
-letters,
-words,
-logos,
-watermarks
-"""
-
-# Clean whitespace.
-DEFAULT_NEGATIVE_PROMPT = " ".join(
-    build_negative_prompt().split()
+STYLE_PROMPT = (
+    "cinematic 3D historical reconstruction, "
+    "high-end AAA game cinematic, "
+    "Unreal Engine style, "
+    "detailed CGI, "
+    "realistic 3D geometry, "
+    "physically based materials, "
+    "detailed textures, "
+    "cinematic lighting, "
+    "volumetric atmosphere, "
+    "dramatic depth, "
+    "epic composition"
 )
 
 
 # ============================================================
-# FINAL PROMPT
+# COMPACT NEGATIVE PROMPT
 # ============================================================
 
-def build_image_prompt(
-    scene: dict,
-    config,
-) -> str:
+NEGATIVE_PROMPT = (
+    "photograph, photography, live action, "
+    "documentary photo, flat illustration, "
+    "2D art, painting, cartoon, anime, manga, "
+    "modern objects, modern clothing, "
+    "modern architecture, futuristic, "
+    "low quality, low detail, low poly, "
+    "text, letters, logo, watermark"
+)
+
+
+# ============================================================
+# TEXT CLEANING
+# ============================================================
+
+def _clean_text(text: str) -> str:
     """
-    Combines:
-
-        1. Qwen's scene content
-        2. Config art style
-        3. Historical accuracy rules
-        4. Strong 3D rendering direction
-
-    Qwen controls the historical subject.
-    The image engine controls the rendering medium.
+    Normalize text into a compact prompt-friendly string.
     """
 
-    # --------------------------------------------------------
-    # Qwen's generated visual prompt
-    # --------------------------------------------------------
+    if not text:
+        return ""
 
-    qwen_prompt = (
+    text = str(text)
+
+    # Remove excessive whitespace.
+    text = " ".join(text.split())
+
+    return text.strip()
+
+
+# ============================================================
+# EXTRACT IMPORTANT SCENE INFORMATION
+# ============================================================
+
+def build_subject_prompt(scene: dict) -> str:
+    """
+    Build the first SDXL prompt.
+
+    Qwen's detailed scene is preserved in scenes.json, but only
+    the most visually important portion is sent to CLIP.
+
+    We intentionally keep this compact.
+    """
+
+    visual = _clean_text(
         scene.get("image_prompt")
         or scene.get("visual_description")
         or scene.get("image_description")
         or ""
     )
 
-    qwen_prompt = str(qwen_prompt).strip()
-
-    if not qwen_prompt:
+    if not visual:
         raise ValueError(
             f"Scene {scene.get('scene_number', scene.get('scene_id', '?'))} "
             "does not contain an image prompt or visual description."
         )
 
     # --------------------------------------------------------
-    # Camera
+    # Basic intelligent compression
+    # --------------------------------------------------------
+    #
+    # Qwen normally puts the most important visual information
+    # near the beginning of its description.
+    #
+    # We keep a bounded amount of text so CLIP does not receive
+    # hundreds of tokens.
+    #
+    # The limit is character-based rather than token-based,
+    # giving us a safe margin below CLIP's 77-token limit.
     # --------------------------------------------------------
 
-    camera = str(
-        scene.get("camera", "")
-    ).strip()
+    words = visual.split()
 
-    # --------------------------------------------------------
-    # Style
-    # --------------------------------------------------------
+    # Approximately 45-55 words depending on tokenization.
+    words = words[:55]
 
-    style_prompt = build_style_prompt(config)
+    compact_visual = " ".join(words)
 
-    # --------------------------------------------------------
-    # Historical rules
-    # --------------------------------------------------------
-
-    historical_prompt = build_visual_rules_prompt(config)
-
-    # --------------------------------------------------------
-    # Camera instruction
-    # --------------------------------------------------------
-
-    camera_prompt = ""
-
-    if camera:
-        camera_prompt = f"""
-Camera direction:
-{camera}
-"""
-
-    # --------------------------------------------------------
-    # Final prompt
-    # --------------------------------------------------------
-
-    final_prompt = f"""
-HISTORICAL SUBJECT AND SCENE:
-
-{qwen_prompt}
-
-VISUAL MEDIUM AND RENDERING:
-
-{style_prompt}
-
-HISTORICAL ACCURACY:
-
-{historical_prompt}
-
-{camera_prompt}
-
-The image must look like a deliberately created
-high-end 3D historical reconstruction rather than a photograph.
-
-Render the people, architecture, landscape, clothing,
-objects and environment as fully modeled three-dimensional
-CGI assets with physically based materials.
-
-Use convincing 3D geometry, detailed surfaces,
-natural material response, cinematic volumetric lighting,
-atmospheric depth, dramatic scale and strong visual hierarchy.
-
-Preserve the specific historical location, culture,
-period, architecture, clothing, tools and objects
-described in the scene.
-
-Do not replace historically specific details with
-generic African visual stereotypes.
-
-The result should resemble an expensive AAA historical
-video game cinematic rendered in Unreal Engine,
-with cinematic composition and epic visual storytelling.
-"""
-
-    return " ".join(final_prompt.split())
+    return compact_visual
 
 
 # ============================================================
-# IMAGE GENERATION
+# CAMERA PROMPT
+# ============================================================
+
+def build_camera_prompt(scene: dict) -> str:
+    """
+    Convert the camera instruction into a compact visual phrase.
+    """
+
+    camera = _clean_text(
+        scene.get("camera", "")
+    )
+
+    if not camera:
+        return ""
+
+    # Keep camera information short.
+    camera_words = camera.split()[:12]
+
+    return " ".join(camera_words)
+
+
+# ============================================================
+# HISTORICAL STYLE PROMPT
+# ============================================================
+
+def build_historical_prompt(config) -> str:
+    """
+    Compact historical constraints.
+
+    These are deliberately keywords rather than long sentences.
+    """
+
+    rules = getattr(config, "visual_rules", None)
+
+    if not isinstance(rules, dict):
+        rules = {}
+
+    parts = []
+
+    if rules.get("prioritize_historical_accuracy", True):
+        parts.append("historically accurate")
+
+    if rules.get("avoid_anachronisms", True):
+        parts.append("period-accurate")
+
+    if rules.get("avoid_generic_african_architecture", True):
+        parts.append("region-specific architecture")
+
+    if rules.get("avoid_modern_objects", True):
+        parts.append("no modern objects")
+
+    if rules.get("avoid_unjustified_costumes", True):
+        parts.append("period-appropriate clothing")
+
+    if rules.get("use_region_specific_architecture", True):
+        parts.append("regional construction")
+
+    if rules.get("use_period_specific_materials", True):
+        parts.append("period-specific materials")
+
+    if rules.get("use_evidence_based_visual_details", True):
+        parts.append("evidence-based details")
+
+    return ", ".join(parts)
+
+
+# ============================================================
+# BUILD SDXL PROMPTS
+# ============================================================
+
+def build_image_prompts(scene: dict, config):
+    """
+    Build the two prompts used by SDXL.
+
+    prompt:
+        Historical subject and visual content.
+
+    prompt_2:
+        Rendering style and visual medium.
+
+    Both are deliberately compact to avoid the CLIP 77-token
+    limitation.
+    """
+
+    subject = build_subject_prompt(scene)
+
+    camera = build_camera_prompt(scene)
+
+    historical = build_historical_prompt(config)
+
+    # --------------------------------------------------------
+    # PROMPT 1
+    # --------------------------------------------------------
+
+    prompt_parts = [
+        subject,
+    ]
+
+    if historical:
+        prompt_parts.append(historical)
+
+    if camera:
+        prompt_parts.append(camera)
+
+    prompt = ", ".join(
+        part for part in prompt_parts
+        if part
+    )
+
+    # --------------------------------------------------------
+    # PROMPT 2
+    # --------------------------------------------------------
+
+    prompt_2 = STYLE_PROMPT
+
+    return prompt, prompt_2
+
+
+# ============================================================
+# GENERATE IMAGE
 # ============================================================
 
 def generate_image(
     pipe,
     prompt: str,
+    prompt_2: str,
     output_path: Path,
     config,
     seed: Optional[int] = None,
 ):
     """
-    Generate a single vertical SDXL image.
+    Generate one vertical SDXL image.
+
+    SDXL receives:
+        prompt   = scene content
+        prompt_2 = visual/rendering style
     """
 
     width = int(
@@ -457,7 +334,9 @@ def generate_image(
     generator = None
 
     if seed is not None:
-        generator = torch.Generator(device="cpu").manual_seed(
+        generator = torch.Generator(
+            device="cpu"
+        ).manual_seed(
             int(seed)
         )
 
@@ -467,7 +346,9 @@ def generate_image(
 
     result = pipe(
         prompt=prompt,
-        negative_prompt=DEFAULT_NEGATIVE_PROMPT,
+        prompt_2=prompt_2,
+        negative_prompt=NEGATIVE_PROMPT,
+        negative_prompt_2=NEGATIVE_PROMPT,
         width=width,
         height=height,
         num_inference_steps=steps,
@@ -482,6 +363,7 @@ def generate_image(
     # --------------------------------------------------------
 
     output_path = Path(output_path)
+
     output_path.parent.mkdir(
         parents=True,
         exist_ok=True,
@@ -490,7 +372,7 @@ def generate_image(
     image.save(output_path)
 
     # --------------------------------------------------------
-    # Memory cleanup
+    # Cleanup
     # --------------------------------------------------------
 
     del result
@@ -502,13 +384,13 @@ def generate_image(
 
 
 # ============================================================
-# SCENE IMAGE PATH
+# SCENE NUMBER
 # ============================================================
 
-def _scene_number(scene: dict, fallback: int) -> int:
-    """
-    Safely determine scene number.
-    """
+def _scene_number(
+    scene: dict,
+    fallback: int,
+) -> int:
 
     value = (
         scene.get("scene_number")
@@ -518,6 +400,7 @@ def _scene_number(scene: dict, fallback: int) -> int:
 
     try:
         return int(value)
+
     except Exception:
         return fallback
 
@@ -532,12 +415,17 @@ def run(
     scenes: list,
     pipe,
     config,
-    progress: Optional[Callable[[int, int], None]] = None,
+    progress: Optional[
+        Callable[[int, int], None]
+    ] = None,
 ):
     """
     Generate only missing scene images.
 
-    Existing images are never regenerated.
+    Existing images are skipped.
+
+    This makes the image processor safe to resume even if the
+    manifest says IMAGES_READY but files have been deleted.
     """
 
     total = len(scenes)
@@ -555,7 +443,7 @@ def run(
     )
 
     # --------------------------------------------------------
-    # Process each scene
+    # Process scenes
     # --------------------------------------------------------
 
     for index, scene in enumerate(
@@ -576,13 +464,17 @@ def run(
         )
 
         # ----------------------------------------------------
-        # Resume support
+        # Missing-image detection
         # ----------------------------------------------------
 
-        if output_path.exists() and output_path.stat().st_size > 0:
+        if (
+            output_path.exists()
+            and output_path.stat().st_size > 0
+        ):
 
             print(
-                f"[IMAGE] Scene {scene_number}/{total} "
+                f"[IMAGE] Scene "
+                f"{scene_number}/{total} "
                 f"already exists — skipping."
             )
 
@@ -597,10 +489,10 @@ def run(
             continue
 
         # ----------------------------------------------------
-        # Build prompt
+        # Build compact prompts
         # ----------------------------------------------------
 
-        prompt = build_image_prompt(
+        prompt, prompt_2 = build_image_prompts(
             scene,
             config,
         )
@@ -610,10 +502,14 @@ def run(
             f"{scene_number}/{total}..."
         )
 
-        # Optional: print prompt for debugging.
         print(
-            f"[IMAGE] Prompt preview: "
-            f"{prompt[:300]}..."
+            f"[IMAGE] Prompt 1: "
+            f"{prompt}"
+        )
+
+        print(
+            f"[IMAGE] Prompt 2: "
+            f"{prompt_2}"
         )
 
         # ----------------------------------------------------
@@ -623,6 +519,7 @@ def run(
         generate_image(
             pipe=pipe,
             prompt=prompt,
+            prompt_2=prompt_2,
             output_path=output_path,
             config=config,
         )
@@ -630,7 +527,8 @@ def run(
         generated += 1
 
         print(
-            f"[IMAGE] Saved: {output_path}"
+            f"[IMAGE] Saved: "
+            f"{output_path}"
         )
 
         if progress:
@@ -640,7 +538,7 @@ def run(
             )
 
     # --------------------------------------------------------
-    # Final cleanup
+    # Cleanup
     # --------------------------------------------------------
 
     _clear_memory()
