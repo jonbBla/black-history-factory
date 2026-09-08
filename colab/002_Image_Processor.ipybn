@@ -1,7 +1,3 @@
-
-
-02_Image_Processor.ipynb_
-
 02 — Image Processor
 
 Generates only missing images. It reports every scene and resumes safely after a Colab reset.
