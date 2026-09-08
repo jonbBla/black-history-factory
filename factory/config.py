@@ -25,7 +25,7 @@ DEFAULTS = {
     # IMAGE GENERATION
     # ------------------------------------------------------------
 
-    "image_model": "ByteDance/SDXL-Lightning",
+    "image_model": "stabilityai/stable-diffusion-xl-base-1.0",
 
     "image_base_model": (
         "stabilityai/stable-diffusion-xl-base-1.0"
@@ -38,8 +38,8 @@ DEFAULTS = {
     "image_width": 768,
     "image_height": 1344,
 
-    "image_steps": 4,
-    "image_guidance_scale": 0.0,
+    "image_steps": 28,
+    "image_guidance_scale": 7.0,
 
     "image_mode": "generate_missing_only",
 
