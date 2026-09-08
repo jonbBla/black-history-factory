@@ -1,0 +1,386 @@
+
+
+02_Image_Processor.ipynb_
+
+02 — Image Processor
+
+Generates only missing images. It reports every scene and resumes safely after a Colab reset.
+
+[3]
+
+0s
+
+
+# ============================================================
+# 1. Refresh Black History Factory from GitHub
+# ============================================================
+
+import os
+import sys
+import subprocess
+
+ROOT = "/content/black-history-factory"
+REPO_URL = "https://github.com/jonbBla/black-history-factory.git"
+
+if os.path.exists(os.path.join(ROOT, ".git")):
+    print("[SETUP] Repository exists. Pulling latest changes...")
+
+    subprocess.run(
+        ["git", "-C", ROOT, "fetch", "origin"],
+        check=True
+    )
+
+    subprocess.run(
+        ["git", "-C", ROOT, "reset", "--hard", "origin/HEAD"],
+        check=True
+    )
+
+    subprocess.run(
+        ["git", "-C", ROOT, "clean", "-fd"],
+        check=True
+    )
+
+else:
+    print("[SETUP] Repository not found. Cloning...")
+
+    subprocess.run(
+        ["git", "clone", REPO_URL, ROOT],
+        check=True
+    )
+
+# Make sure the repository is imported first.
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+print("[SETUP] Repository refreshed.")
+print("[SETUP] Location:", ROOT)
+
+# Show the commit currently being used.
+commit = subprocess.check_output(
+    ["git", "-C", ROOT, "rev-parse", "--short", "HEAD"],
+    text=True
+).strip()
+
+print("[SETUP] Commit:", commit)
+
+[SETUP] Repository exists. Pulling latest changes... [SETUP] Repository refreshed. [SETUP] Location: /content/black-history-factory [SETUP] Commit: af37b48 
+
+[4]
+
+24s
+
+import os, sys, subprocess
+ROOT="/content/black-history-factory"
+REPO_URL="https://github.com/jonbBla/black-history-factory.git"
+if not os.path.exists(ROOT):
+    subprocess.run(["git","clone",REPO_URL,ROOT], check=True)
+sys.path.insert(0, ROOT)
+subprocess.run([sys.executable,"-m","pip","install","-q","diffusers","transformers","accelerate","safetensors"],check=True)
+from factory.drive import mount_drive,DrivePaths
+from factory.config import Config
+MYDRIVE=mount_drive(); paths=DrivePaths(os.path.join(MYDRIVE,"BLACK_HISTORY_FACTORY")); paths.ensure_tree(); config=Config.load(paths.root)
+print(f"[SETUP] Drive: {paths.root}")
+
+Mounted at /content/drive [SETUP] Drive: /content/drive/MyDrive/BLACK_HISTORY_FACTORY 
+
+[5]
+
+1m
+
+from factory.image_engine import load_sdxl_lightning
+pipe=load_sdxl_lightning(config.image_model)
+print("[IMAGE] SDXL-Lightning loaded.")
+
+[6]
+
+from factory.image_engine import run
+from factory.utils import read_json, write_json_atomic
+from factory import status
+
+
+def process_one():
+    candidates = []
+
+    # --------------------------------------------------------
+    # Find jobs that may need image generation
+    # --------------------------------------------------------
+
+    if paths.jobs_dir.exists():
+        for jid_path in sorted(paths.jobs_dir.iterdir()):
+            if not jid_path.is_dir():
+                continue
+
+            jid = jid_path.name
+
+            manifest = read_json(
+                paths.manifest(jid),
+                {}
+            ) or {}
+
+            # Only consider jobs that have reached the image stage.
+            if manifest.get("status") not in (
+                "QWEN_READY",
+                "IMAGES_PARTIAL",
+                "IMAGES_READY",
+            ):
+                continue
+
+            scenes = read_json(
+                paths.scenes(jid),
+                []
+            ) or []
+
+            if not scenes:
+                continue
+
+            # ------------------------------------------------
+            # ACTUAL FILE CHECK
+            # ------------------------------------------------
+
+            missing = []
+
+            for index, scene in enumerate(scenes, start=1):
+
+                scene_number = int(
+                    scene.get(
+                        "scene_number",
+                        scene.get("scene_id", index)
+                    )
+                )
+
+                image_path = paths.image(
+                    jid,
+                    scene_number
+                )
+
+                if (
+                    not image_path.exists()
+                    or image_path.stat().st_size == 0
+                ):
+                    missing.append(scene_number)
+
+            # Only queue the job if an image is actually missing.
+            if missing:
+                candidates.append(
+                    (jid, scenes, missing)
+                )
+
+    # --------------------------------------------------------
+    # Nothing needs generating
+    # --------------------------------------------------------
+
+    if not candidates:
+        print(
+            "[IMAGE] No jobs with missing images."
+        )
+        return False
+
+    # --------------------------------------------------------
+    # Select first job
+    # --------------------------------------------------------
+
+    jid, scenes, missing = candidates[0]
+
+    print(
+        f"[IMAGE] START {jid}"
+    )
+
+    print(
+        f"[IMAGE] Total scenes: {len(scenes)}"
+    )
+
+    print(
+        f"[IMAGE] Missing images: {len(missing)}"
+    )
+
+    print(
+        f"[IMAGE] Missing scenes: {missing}"
+    )
+
+    # --------------------------------------------------------
+    # Status
+    # --------------------------------------------------------
+
+    status.set_processor(
+        paths,
+        "image",
+        "running",
+        jid,
+        "image_generation",
+        f"0/{len(scenes)}",
+        0,
+        len(scenes)
+    )
+
+    def progress(n, total):
+
+        print(
+            f"[IMAGE] Scene {n}/{total}"
+        )
+
+        status.set_processor(
+            paths,
+            "image",
+            "running",
+            jid,
+            "image_generation",
+            f"scene {n}/{total}",
+            n,
+            total
+        )
+
+    # --------------------------------------------------------
+    # Generate missing images
+    # --------------------------------------------------------
+
+    try:
+
+        run(
+            paths,
+            jid,
+            scenes,
+            pipe,
+            config,
+            progress
+        )
+
+        # ----------------------------------------------------
+        # Verify AFTER generation
+        # ----------------------------------------------------
+
+        still_missing = []
+
+        for index, scene in enumerate(
+            scenes,
+            start=1
+        ):
+
+            scene_number = int(
+                scene.get(
+                    "scene_number",
+                    scene.get("scene_id", index)
+                )
+            )
+
+            image_path = paths.image(
+                jid,
+                scene_number
+            )
+
+            if (
+                not image_path.exists()
+                or image_path.stat().st_size == 0
+            ):
+                still_missing.append(scene_number)
+
+        # ----------------------------------------------------
+        # Don't claim READY if files are still missing
+        # ----------------------------------------------------
+
+        manifest = read_json(
+            paths.manifest(jid),
+            {}
+        ) or {}
+
+        if still_missing:
+
+            manifest["status"] = "IMAGES_PARTIAL"
+            manifest["image_error"] = (
+                f"Missing images after generation: "
+                f"{still_missing}"
+            )
+
+            write_json_atomic(
+                paths.manifest(jid),
+                manifest
+            )
+
+            status.set_processor(
+                paths,
+                "image",
+                "error",
+                jid,
+                "partial",
+                f"Still missing: {still_missing}"
+            )
+
+            print(
+                f"[IMAGE] PARTIAL {jid} | "
+                f"Still missing: {still_missing}"
+            )
+
+            return False
+
+        # ----------------------------------------------------
+        # Everything exists
+        # ----------------------------------------------------
+
+        manifest["status"] = "IMAGES_READY"
+
+        # Remove old error if one exists.
+        manifest.pop("image_error", None)
+
+        write_json_atomic(
+            paths.manifest(jid),
+            manifest
+        )
+
+        status.set_processor(
+            paths,
+            "image",
+            "idle",
+            jid,
+            "ready",
+            "images complete",
+            len(scenes),
+            len(scenes)
+        )
+
+        print(
+            f"[IMAGE] COMPLETE {jid}"
+        )
+
+        return True
+
+    except Exception as e:
+
+        manifest = read_json(
+            paths.manifest(jid),
+            {}
+        ) or {}
+
+        manifest.update(
+            status="IMAGES_PARTIAL",
+            image_error=str(e)
+        )
+
+        write_json_atomic(
+            paths.manifest(jid),
+            manifest
+        )
+
+        status.set_processor(
+            paths,
+            "image",
+            "error",
+            jid,
+            "failed",
+            str(e)
+        )
+
+        print(
+            f"[IMAGE] ERROR {jid} | {e}"
+        )
+
+        raise
+
+
+process_one()
+
+Next steps:
+
+# Optional after the one-video test.
+while process_one(): pass
+
+Colab paid products-Cancel contracts here
+
