@@ -1,25 +1,53 @@
-# factory/image_engine.py
-
 from __future__ import annotations
 
 import gc
+import re
 from pathlib import Path
-from typing import Callable, Optional
 
 import torch
 from diffusers import StableDiffusionXLPipeline
 
+from .utils import read_json
 
-# ============================================================
-# MODEL
-# ============================================================
 
 MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
 
 
 # ============================================================
-# MEMORY
+# PROMPT SETTINGS
 # ============================================================
+
+STYLE_PROMPT = """
+cinematic 3D historical reconstruction, high-end AAA game cinematic,
+Unreal Engine style, highly detailed CGI, realistic 3D geometry,
+physically based materials, realistic skin texture, natural cloth
+folds, detailed surfaces, cinematic lighting, volumetric atmosphere,
+dramatic depth, epic composition, realistic proportions,
+high micro-detail, historically immersive environment
+"""
+
+NEGATIVE_PROMPT = """
+cartoon, anime, illustration, painting, flat 2D art, low quality,
+low resolution, blurry, pixelated, oversaturated, plastic skin,
+waxy skin, deformed face, bad anatomy, extra fingers, missing fingers,
+fused fingers, extra limbs, duplicate people, malformed hands,
+distorted body, floating objects, impossible perspective, text,
+logo, watermark, UI, cropped head, cropped feet, out of focus subject,
+modern objects, modern clothing, modern architecture, anachronism
+"""
+
+
+# ============================================================
+# GENERAL HELPERS
+# ============================================================
+
+def clean(text):
+    """Normalize whitespace WITHOUT truncating the text."""
+    if text is None:
+        return ""
+
+    return re.sub(r"\s+", " ", str(text).strip())
+
 
 def _clear_memory():
     gc.collect()
@@ -29,34 +57,170 @@ def _clear_memory():
         torch.cuda.ipc_collect()
 
 
+def _first(scene, *keys):
+    """Return the first non-empty scene field."""
+    for key in keys:
+        value = scene.get(key)
+
+        if value is not None and str(value).strip():
+            return clean(value)
+
+    return ""
+
+
 # ============================================================
-# LOAD SDXL
+# STRUCTURED PROMPT
 # ============================================================
 
-def load_sdxl_lightning(model_id: Optional[str] = None):
+def build_prompt(scene):
     """
-    Load SDXL Base.
+    Convert the Qwen scene into the same structured prompt style
+    used by the working Structured SDXL notebook.
 
-    The function name is retained for compatibility with the
-    existing Image Processor notebook.
+    IMPORTANT:
+    There is deliberately NO words[:55], character slicing,
+    or other artificial truncation here.
+    """
+
+    visual_description = _first(
+        scene,
+        "visual_description",
+        "image_description",
+        "description"
+    )
+
+    image_prompt = _first(
+        scene,
+        "image_prompt"
+    )
+
+    camera = _first(
+        scene,
+        "camera",
+        "camera_position"
+    )
+
+    narration = _first(
+        scene,
+        "narration"
+    )
+
+    # Main visual information supplied by Qwen.
+    event_moment = visual_description or image_prompt
+
+    if not event_moment:
+        event_moment = (
+            "a historically accurate reconstruction of the event "
+            "described by the narration"
+        )
+
+    environment_setting = (
+        "A historically accurate environment based on the scene, "
+        "with region-specific architecture, terrain, vegetation, "
+        "structures, materials, and spatial relationships. "
+        "Use period-authentic details and avoid generic African "
+        "architecture."
+    )
+
+    characters_appearance = (
+        "People must appear historically and regionally appropriate, "
+        "with realistic anatomy, historically appropriate hairstyles, "
+        "clothing, textiles, jewelry, tools, posture, and activities. "
+        "Do not introduce unjustified costumes or modern clothing."
+    )
+
+    lighting_atmosphere = (
+        "dramatic natural cinematic lighting, realistic shadows, "
+        "physically plausible illumination, volumetric atmosphere, "
+        "atmospheric depth, detailed surfaces, dramatic historical "
+        "mood and strong cinematic depth"
+    )
+
+    props_objects = (
+        "Historically appropriate objects, tools, vessels, furniture, "
+        "textiles, artifacts, architectural details, food and other "
+        "objects specifically relevant to the scene. Avoid modern "
+        "objects and anachronistic technology."
+    )
+
+    unreal_rendering = clean(STYLE_PROMPT)
+
+    camera_position = camera or (
+        "cinematic wide establishing composition, strong depth, "
+        "clear focal subject, natural perspective and balanced framing"
+    )
+
+    # --------------------------------------------------------
+    # This follows the proven notebook's structure:
+    #
+    # EVENT
+    # ENVIRONMENT
+    # CHARACTERS
+    # LIGHTING
+    # PROPS
+    # RENDERING
+    # CAMERA
+    #
+    # The complete prompt is passed to SDXL.
+    # --------------------------------------------------------
+
+    final_prompt = f"""
+A cinematic historical scene depicting {event_moment}.
+
+Environment and setting: {environment_setting}
+
+Characters and appearance: {characters_appearance}
+
+Lighting and atmosphere: {lighting_atmosphere}
+
+Props and objects: {props_objects}
+
+Rendering: {unreal_rendering}
+
+Camera: {camera_position}
+
+Historical context from the narration: {narration}
+
+Prioritize physically believable anatomy, authentic materials,
+realistic skin texture, natural cloth folds, accurate scale,
+environmental storytelling, coherent spatial relationships,
+period-specific materials, historically appropriate architecture,
+realistic textures, sharp focal subject, cinematic composition,
+subtle filmic color response, dramatic scale, high micro-detail,
+and a highly detailed cinematic 3D historical reconstruction.
+"""
+
+    return clean(final_prompt), clean(NEGATIVE_PROMPT)
+
+
+# ============================================================
+# MODEL LOADER
+# ============================================================
+
+def load_sdxl_lightning(model_id=None):
+    """
+    Kept under the existing function name so the Image Processor
+    notebook does not need to change.
+
+    The actual model is stable SDXL Base.
     """
 
     model_id = model_id or MODEL_ID
 
-    print(f"[IMAGE] Loading SDXL model: {model_id}")
+    print(f"[IMAGE] Loading SDXL: {model_id}")
+
+    dtype = torch.float16
 
     pipe = StableDiffusionXLPipeline.from_pretrained(
         model_id,
-        torch_dtype=torch.float16,
+        torch_dtype=dtype,
         use_safetensors=True,
         variant="fp16",
         add_watermarker=False,
     )
 
-    # Important for Colab T4 / limited VRAM.
     pipe.enable_model_cpu_offload()
 
-    # Reduce VAE memory usage.
     pipe.vae.enable_slicing()
     pipe.vae.enable_tiling()
 
@@ -68,287 +232,42 @@ def load_sdxl_lightning(model_id: Optional[str] = None):
 
 
 # ============================================================
-# COMPACT STYLE PROMPT
+# SINGLE SCENE GENERATION
 # ============================================================
 
-STYLE_PROMPT = (
-    "cinematic 3D historical reconstruction, "
-    "high-end AAA game cinematic, "
-    "Unreal Engine style, "
-    "detailed CGI, "
-    "realistic 3D geometry, "
-    "physically based materials, "
-    "detailed textures, "
-    "cinematic lighting, "
-    "volumetric atmosphere, "
-    "dramatic depth, "
-    "epic composition"
-)
-
-
-# ============================================================
-# COMPACT NEGATIVE PROMPT
-# ============================================================
-
-NEGATIVE_PROMPT = (
-    "photograph, photography, live action, "
-    "documentary photo, flat illustration, "
-    "2D art, painting, cartoon, anime, manga, "
-    "modern objects, modern clothing, "
-    "modern architecture, futuristic, "
-    "low quality, low detail, low poly, "
-    "text, letters, logo, watermark"
-)
-
-
-# ============================================================
-# TEXT CLEANING
-# ============================================================
-
-def _clean_text(text: str) -> str:
+def generate_scene(pipe, scene, output_path, config):
     """
-    Normalize text into a compact prompt-friendly string.
+    Generate one missing scene image.
+
+    The complete structured prompt is passed to SDXL without
+    artificial shortening.
     """
 
-    if not text:
-        return ""
-
-    text = str(text)
-
-    # Remove excessive whitespace.
-    text = " ".join(text.split())
-
-    return text.strip()
-
-
-# ============================================================
-# EXTRACT IMPORTANT SCENE INFORMATION
-# ============================================================
-
-def build_subject_prompt(scene: dict) -> str:
-    """
-    Build the first SDXL prompt.
-
-    Qwen's detailed scene is preserved in scenes.json, but only
-    the most visually important portion is sent to CLIP.
-
-    We intentionally keep this compact.
-    """
-
-    visual = _clean_text(
-        scene.get("image_prompt")
-        or scene.get("visual_description")
-        or scene.get("image_description")
-        or ""
-    )
-
-    if not visual:
-        raise ValueError(
-            f"Scene {scene.get('scene_number', scene.get('scene_id', '?'))} "
-            "does not contain an image prompt or visual description."
-        )
-
-    # --------------------------------------------------------
-    # Basic intelligent compression
-    # --------------------------------------------------------
-    #
-    # Qwen normally puts the most important visual information
-    # near the beginning of its description.
-    #
-    # We keep a bounded amount of text so CLIP does not receive
-    # hundreds of tokens.
-    #
-    # The limit is character-based rather than token-based,
-    # giving us a safe margin below CLIP's 77-token limit.
-    # --------------------------------------------------------
-
-    words = visual.split()
-
-    # Approximately 45-55 words depending on tokenization.
-    words = words[:55]
-
-    compact_visual = " ".join(words)
-
-    return compact_visual
-
-
-# ============================================================
-# CAMERA PROMPT
-# ============================================================
-
-def build_camera_prompt(scene: dict) -> str:
-    """
-    Convert the camera instruction into a compact visual phrase.
-    """
-
-    camera = _clean_text(
-        scene.get("camera", "")
-    )
-
-    if not camera:
-        return ""
-
-    # Keep camera information short.
-    camera_words = camera.split()[:12]
-
-    return " ".join(camera_words)
-
-
-# ============================================================
-# HISTORICAL STYLE PROMPT
-# ============================================================
-
-def build_historical_prompt(config) -> str:
-    """
-    Compact historical constraints.
-
-    These are deliberately keywords rather than long sentences.
-    """
-
-    rules = getattr(config, "visual_rules", None)
-
-    if not isinstance(rules, dict):
-        rules = {}
-
-    parts = []
-
-    if rules.get("prioritize_historical_accuracy", True):
-        parts.append("historically accurate")
-
-    if rules.get("avoid_anachronisms", True):
-        parts.append("period-accurate")
-
-    if rules.get("avoid_generic_african_architecture", True):
-        parts.append("region-specific architecture")
-
-    if rules.get("avoid_modern_objects", True):
-        parts.append("no modern objects")
-
-    if rules.get("avoid_unjustified_costumes", True):
-        parts.append("period-appropriate clothing")
-
-    if rules.get("use_region_specific_architecture", True):
-        parts.append("regional construction")
-
-    if rules.get("use_period_specific_materials", True):
-        parts.append("period-specific materials")
-
-    if rules.get("use_evidence_based_visual_details", True):
-        parts.append("evidence-based details")
-
-    return ", ".join(parts)
-
-
-# ============================================================
-# BUILD SDXL PROMPTS
-# ============================================================
-
-def build_image_prompts(scene: dict, config):
-    """
-    Build the two prompts used by SDXL.
-
-    prompt:
-        Historical subject and visual content.
-
-    prompt_2:
-        Rendering style and visual medium.
-
-    Both are deliberately compact to avoid the CLIP 77-token
-    limitation.
-    """
-
-    subject = build_subject_prompt(scene)
-
-    camera = build_camera_prompt(scene)
-
-    historical = build_historical_prompt(config)
-
-    # --------------------------------------------------------
-    # PROMPT 1
-    # --------------------------------------------------------
-
-    prompt_parts = [
-        subject,
-    ]
-
-    if historical:
-        prompt_parts.append(historical)
-
-    if camera:
-        prompt_parts.append(camera)
-
-    prompt = ", ".join(
-        part for part in prompt_parts
-        if part
-    )
-
-    # --------------------------------------------------------
-    # PROMPT 2
-    # --------------------------------------------------------
-
-    prompt_2 = STYLE_PROMPT
-
-    return prompt, prompt_2
-
-
-# ============================================================
-# GENERATE IMAGE
-# ============================================================
-
-def generate_image(
-    pipe,
-    prompt: str,
-    prompt_2: str,
-    output_path: Path,
-    config,
-    seed: Optional[int] = None,
-):
-    """
-    Generate one vertical SDXL image.
-
-    SDXL receives:
-        prompt   = scene content
-        prompt_2 = visual/rendering style
-    """
-
-    width = int(
-        getattr(config, "image_width", 768)
-    )
-
-    height = int(
-        getattr(config, "image_height", 1344)
-    )
-
-    steps = int(
-        getattr(config, "image_steps", 28)
-    )
-
-    guidance = float(
-        getattr(config, "image_guidance_scale", 7.0)
-    )
-
-    # --------------------------------------------------------
-    # Generator
-    # --------------------------------------------------------
-
-    generator = None
-
-    if seed is not None:
-        generator = torch.Generator(
-            device="cpu"
-        ).manual_seed(
-            int(seed)
-        )
-
-    # --------------------------------------------------------
-    # Generate
-    # --------------------------------------------------------
+    final_prompt, negative_prompt = build_prompt(scene)
+
+    width = int(getattr(config, "image_width", 768))
+    height = int(getattr(config, "image_height", 1344))
+
+    steps = int(getattr(config, "image_steps", 28))
+    guidance = float(getattr(config, "image_guidance_scale", 7.0))
+
+    # Generate one image at a time for Colab/T4 stability.
+    seed = torch.randint(
+        0,
+        2**32 - 1,
+        (1,),
+        device="cpu"
+    ).item()
+
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+
+    print(f"[IMAGE] Prompt characters: {len(final_prompt)}")
+    print(f"[IMAGE] Prompt words: {len(final_prompt.split())}")
+    print(f"[IMAGE] Seed: {seed}")
 
     result = pipe(
-        prompt=prompt,
-        prompt_2=prompt_2,
-        negative_prompt=NEGATIVE_PROMPT,
-        negative_prompt_2=NEGATIVE_PROMPT,
+        prompt=final_prompt,
+        negative_prompt=negative_prompt,
         width=width,
         height=height,
         num_inference_steps=steps,
@@ -358,25 +277,10 @@ def generate_image(
 
     image = result.images[0]
 
-    # --------------------------------------------------------
-    # Save
-    # --------------------------------------------------------
-
     output_path = Path(output_path)
-
-    output_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     image.save(output_path)
-
-    # --------------------------------------------------------
-    # Cleanup
-    # --------------------------------------------------------
-
-    del result
-    del image
 
     _clear_memory()
 
@@ -384,174 +288,80 @@ def generate_image(
 
 
 # ============================================================
-# SCENE NUMBER
+# IMAGE PROCESSOR
 # ============================================================
 
-def _scene_number(
-    scene: dict,
-    fallback: int,
-) -> int:
-
-    value = (
-        scene.get("scene_number")
-        or scene.get("scene_id")
-        or fallback
-    )
-
-    try:
-        return int(value)
-
-    except Exception:
-        return fallback
-
-
-# ============================================================
-# RUN IMAGE PROCESSOR
-# ============================================================
-
-def run(
-    paths,
-    job_id: str,
-    scenes: list,
-    pipe,
-    config,
-    progress: Optional[
-        Callable[[int, int], None]
-    ] = None,
-):
+def run(paths, jid, scenes, pipe, config, progress=None):
     """
-    Generate only missing scene images.
+    Generate only missing images.
 
-    Existing images are skipped.
-
-    This makes the image processor safe to resume even if the
-    manifest says IMAGES_READY but files have been deleted.
+    Existing images are NEVER regenerated.
     """
 
     total = len(scenes)
 
-    if total == 0:
-        raise ValueError(
-            f"Job {job_id} contains no scenes."
-        )
+    for index, scene in enumerate(scenes, start=1):
 
-    generated = 0
-    skipped = 0
-
-    print(
-        f"[IMAGE] Processing {total} scenes..."
-    )
-
-    # --------------------------------------------------------
-    # Process scenes
-    # --------------------------------------------------------
-
-    for index, scene in enumerate(
-        scenes,
-        start=1,
-    ):
-
-        scene_number = _scene_number(
-            scene,
-            index,
-        )
-
-        output_path = Path(
-            paths.image(
-                job_id,
-                scene_number,
+        scene_number = int(
+            scene.get(
+                "scene_number",
+                scene.get("scene_id", index)
             )
         )
 
+        image_path = paths.image(jid, scene_number)
+
         # ----------------------------------------------------
-        # Missing-image detection
+        # RESUME SUPPORT
         # ----------------------------------------------------
 
-        if (
-            output_path.exists()
-            and output_path.stat().st_size > 0
-        ):
-
+        if image_path.exists() and image_path.stat().st_size > 0:
             print(
-                f"[IMAGE] Scene "
-                f"{scene_number}/{total} "
+                f"[IMAGE] Scene {scene_number}/{total} "
                 f"already exists — skipping."
             )
 
-            skipped += 1
-
             if progress:
-                progress(
-                    index,
-                    total,
-                )
+                progress(index, total)
 
             continue
 
-        # ----------------------------------------------------
-        # Build compact prompts
-        # ----------------------------------------------------
-
-        prompt, prompt_2 = build_image_prompts(
-            scene,
-            config,
-        )
-
         print(
             f"[IMAGE] Generating scene "
-            f"{scene_number}/{total}..."
-        )
-
-        print(
-            f"[IMAGE] Prompt 1: "
-            f"{prompt}"
-        )
-
-        print(
-            f"[IMAGE] Prompt 2: "
-            f"{prompt_2}"
+            f"{scene_number}/{total}"
         )
 
         # ----------------------------------------------------
-        # Generate
+        # SHOW PROMPT INFORMATION
         # ----------------------------------------------------
 
-        generate_image(
+        final_prompt, _ = build_prompt(scene)
+
+        print(
+            f"[IMAGE] Prompt length: "
+            f"{len(final_prompt.split())} words / "
+            f"{len(final_prompt)} characters"
+        )
+
+        # ----------------------------------------------------
+        # GENERATE
+        # ----------------------------------------------------
+
+        generate_scene(
             pipe=pipe,
-            prompt=prompt,
-            prompt_2=prompt_2,
-            output_path=output_path,
+            scene=scene,
+            output_path=image_path,
             config=config,
         )
 
-        generated += 1
-
         print(
-            f"[IMAGE] Saved: "
-            f"{output_path}"
+            f"[IMAGE] Saved scene {scene_number}: "
+            f"{image_path}"
         )
 
         if progress:
-            progress(
-                index,
-                total,
-            )
+            progress(index, total)
 
-    # --------------------------------------------------------
-    # Cleanup
-    # --------------------------------------------------------
+        _clear_memory()
 
-    _clear_memory()
-
-    print(
-        f"[IMAGE] Finished | "
-        f"generated={generated} | "
-        f"skipped={skipped} | "
-        f"total={total}"
-    )
-
-    return {
-        "generated": generated,
-        "skipped": skipped,
-        "total": total,
-    }
+    return True
